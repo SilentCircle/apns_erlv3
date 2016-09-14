@@ -1,0 +1,112 @@
+
+Debug = case os:getenv("REBAR_CONFIG_SCRIPT_DEBUG") of
+           X when X == false orelse X == [] -> false;
+           _ -> true
+        end.
+
+%% Ensure edown target is valid
+ValTarget = fun(Target) ->
+                    ATarget = list_to_atom(Target),
+                    lists:member(ATarget, ['github', 'gitlab', 'stash'])
+                    orelse throw({bad_edown_target, Target}),
+                    ATarget
+            end.
+
+GetCfg = fun(Key, Config, Default) ->
+                      case lists:keyfind(Key, 1, Config) of
+                          false ->
+                              Default;
+                          {Key, PL} ->
+                              PL
+                      end
+              end.
+
+KeyStore = fun(Key, Config, NewVal) ->
+               lists:keystore(Key, 1, Config, {Key, NewVal})
+          end.
+
+GetEDocOpts = fun(Config) -> GetCfg(edoc_opts, Config, []) end.
+GetPreHooks = fun(Config) -> GetCfg(pre_hooks, Config, []) end.
+SetPreHooks = fun(PreHooks, Config) ->
+                      KeyStore(pre_hooks, Config, PreHooks)
+              end.
+GetCTHook = fun(PreHooks) -> GetCfg(ct, PreHooks, undefined) end.
+SetCTHook = fun(CTHook, PreHooks) ->
+                    KeyStore(ct, PreHooks, CTHook)
+            end.
+GetCTOpts = fun(Config) -> GetCfg(ct_opts, Config, []) end.
+SetCTOpts = fun(NewVal, Config) -> KeyStore(ct_opts, Config, NewVal) end.
+GetCTSpec = fun(CTOpts) -> GetCfg(spec, CTOpts, undefined) end.
+SetCTSpec = fun(NewVal, CTOpts) -> KeyStore(spec, CTOpts, NewVal) end.
+
+GetFullHostname = fun() -> net_adm:localhost() end.
+
+MakeLongNodeS = fun(NodeName, HostName) ->
+                        NodeName ++ "@" ++ HostName
+                end.
+
+ConfigureCTOpts = fun(Config) ->
+                          CTOpts0 = GetCTOpts(Config),
+                          CTSpec0 = case GetCTSpec(CTOpts0) of
+                                       undefined ->
+                                           "apns_erlv3.test.spec";
+                                       S ->
+                                           S
+                                   end,
+                          CTOpts = SetCTSpec(CTSpec0, CTOpts0),
+                          SetCTOpts(CTOpts, Config)
+                  end.
+
+ConfigurePreHooks = fun(Config0) ->
+                            Config = ConfigureCTOpts(Config0),
+                            CTSpec = GetCTSpec(GetCTOpts(Config)),
+                            true = (CTSpec /= undefined),
+                            Script = "./pre_common_test_hook.sh",
+                            PreHooks = GetPreHooks(Config),
+                            HostN = GetFullHostname(),
+                            NodeName = MakeLongNodeS("ct1_apns_erlv3", HostN),
+                            CTHook = case GetCTHook(PreHooks) of
+                                         S when S == undefined orelse
+                                                S == Script ->
+                                             string:join([Script,
+                                                          NodeName,
+                                                          CTSpec], " ");
+                                         S ->
+                                             S
+                                     end,
+                            PreHooks1 = SetCTHook(CTHook, PreHooks),
+                            SetPreHooks(PreHooks1, Config)
+                    end.
+
+%%{pre_hooks, [{ct, "./pre_common_test_hook.sh"}]}.
+
+%% If env var is defined, replace edown_target with its contents
+Cfg1 = case os:getenv("EDOWN_TARGET") of
+           T when T == false orelse T == [] ->
+               CONFIG;
+           Target ->
+               EDocOpts = KeyStore(edown_target, GetEDocOpts(CONFIG), ValTarget(Target)),
+               KeyStore(edoc_opts, CONFIG, EDocOpts)
+       end.
+
+%% If env var is defined, replace top_level_readme with its contents
+Cfg2 = case os:getenv("EDOWN_TOP_LEVEL_README_URL") of
+           E when E == false orelse E == [] ->
+               Cfg1;
+           URL ->
+               EDocOpts2 = KeyStore(top_level_readme,
+                                    GetEDocOpts(Cfg1),
+                                    {"./README.md", URL}),
+               KeyStore(edoc_opts, Cfg1, EDocOpts2)
+       end.
+
+%% Common Test configuration: ensure that the CT long node name
+%% uses the current dns host name.
+
+%%{pre_hooks, [{ct, "./pre_common_test_hook.sh"}]}.
+%%{ct_opts, [{spec, "apns_erlv3.test.spec"}]}.
+
+CfgFinal = ConfigurePreHooks(Cfg2),
+%Debug andalso io:format("rebar.config.script output:~n~p~n", [CfgFinal]),
+CfgFinal.
+

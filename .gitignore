@@ -1,0 +1,17 @@
+ebin/
+deps/
+.test
+.*.sw?
+test/*.beam
+doc/*.html
+doc/edoc-info
+doc/erlang.png
+doc/stylesheet.css
+logs/
+html/
+.rebar/
+_build
+rebar3
+tools/
+test/apns_erlv3_SUITE_data/
+apns_erlv3.test.spec

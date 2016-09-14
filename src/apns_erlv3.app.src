@@ -1,0 +1,25 @@
+{application, apns_erlv3,
+    [
+        {description, "APNS HTTP/2 SCPF service"},
+        {vsn, {cmd, "echo `cat APP_VERSION`"}},
+        {registered, []},
+        {applications, [
+                kernel,
+                stdlib,
+                sasl,
+                crypto,
+                public_key,
+                ssl,
+                lager,
+                chatterbox,
+                sc_push_lib,
+                apns_erl_util
+            ]},
+        {mod, { apns_erlv3_app, [
+                    sc_push_svc_apnsv3,
+                    apns_erlv3_session_sup,
+                    apns_erlv3_session
+                ]}},
+        {env, []}
+    ]
+}.

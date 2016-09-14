@@ -1,0 +1,7 @@
+@author Edwin Fine <efine@silentcircle.com>
+@copyright 2012-2016 Silent Circle LLC
+@version 1.2.1
+@title Apple HTTP/2 Push Notification Service for SCPF
+@doc `apns_erlv3' is a Silent Circle Push Framework service provider for the
+Apple Push Notification Service (APNS) using the HTTP/2 APNs API.
+@end
