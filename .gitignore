@@ -15,3 +15,9 @@ rebar3
 tools/
 test/apns_erlv3_SUITE_data/
 apns_erlv3.test.spec
+tags
+.rebar3/
+src/ApnsCerts.asn1db
+src/ApnsCerts.erl
+src/ApnsCerts.hrl
+rebar3.crashdump

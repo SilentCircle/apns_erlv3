@@ -4,6 +4,55 @@ Debug = case os:getenv("REBAR_CONFIG_SCRIPT_DEBUG") of
            _ -> true
         end.
 
+%% If EnvVar exists and has some content, call UserFun(Content, UserArg)
+%% and return its result.
+%% Otherwise return UserArg unchanged.
+RunIfEnvVar = fun(EnvVar, UserFun, Default) ->
+                      case os:getenv(EnvVar) of
+                          X when X =:= false; X == [] ->
+                              Default;
+                          EnvVal ->
+                              UserFun(EnvVal, Default)
+                      end
+              end.
+
+IsDbg = RunIfEnvVar("REBAR_EXTRA_DBG", fun(_EnvVal, _Def) -> true end, false).
+DbgDo = fun(F) when is_function(F, 0) -> IsDbg andalso F() end.
+DbgMsg = fun(Fmt, Args) -> DbgDo(fun() -> io:format(Fmt, Args) end) end.
+
+DbgMsg("CONFIG: ~p~n", [CONFIG]).
+
+%% Strip any combination of newline and whitespace off both ends of S
+StrStrip = fun(S, F, S) ->
+                   S;
+              (S, F, _) ->
+                   F(string:strip(string:strip(S, both, $\n), both), F, S)
+           end.
+
+StrClean = fun(S) ->
+                   StrStrip(S, StrStrip, "")
+           end.
+
+GetFileAppVersion = fun() ->
+                            case file:read_file("APP_VERSION") of
+                                {ok, BVsn} ->
+                                    DbgMsg("File vsn: ~p~n", [BVsn]),
+                                    S = StrClean(binary_to_list(BVsn)),
+                                    DbgMsg("Cleaned vsn: ~p~n", [S]),
+                                    S;
+                                _ ->
+                                    undefined
+                            end
+                    end.
+
+GetAppVersion = fun() ->
+                      case os:getenv("APP_VERSION") of
+                          X when X =:= false;
+                                 X =:= [] -> GetFileAppVersion();
+                          Val -> StrClean(Val)
+                      end
+                end.
+
 %% Ensure edown target is valid
 ValTarget = fun(Target) ->
                     ATarget = list_to_atom(Target),
@@ -78,27 +127,64 @@ ConfigurePreHooks = fun(Config0) ->
                             SetPreHooks(PreHooks1, Config)
                     end.
 
-%%{pre_hooks, [{ct, "./pre_common_test_hook.sh"}]}.
+ChangeEdownUrl = fun(Url, Cfg) ->
+                         EDocOpts = KeyStore(top_level_readme,
+                                             GetEDocOpts(Cfg),
+                                             {"./README.md", Url}),
+                         KeyStore(edoc_opts, Cfg, EDocOpts)
+                 end.
 
 %% If env var is defined, replace edown_target with its contents
-Cfg1 = case os:getenv("EDOWN_TARGET") of
-           T when T == false orelse T == [] ->
-               CONFIG;
-           Target ->
-               EDocOpts = KeyStore(edown_target, GetEDocOpts(CONFIG), ValTarget(Target)),
-               KeyStore(edoc_opts, CONFIG, EDocOpts)
-       end.
+ChangeEdownTarget = fun(Target, Cfg) ->
+                            EDocOpts = KeyStore(edown_target,
+                                                GetEDocOpts(Cfg),
+                                                ValTarget(Target)),
+                            KeyStore(edoc_opts, Cfg, EDocOpts)
+                    end.
 
-%% If env var is defined, replace top_level_readme with its contents
-Cfg2 = case os:getenv("EDOWN_TOP_LEVEL_README_URL") of
-           E when E == false orelse E == [] ->
-               Cfg1;
-           URL ->
-               EDocOpts2 = KeyStore(top_level_readme,
-                                    GetEDocOpts(Cfg1),
-                                    {"./README.md", URL}),
-               KeyStore(edoc_opts, Cfg1, EDocOpts2)
-       end.
+%%
+%% Funs that run the change function if the environment variable is present.
+%%
+CfgEdownUrl = fun(Cfg) ->
+                      RunIfEnvVar("EDOWN_TOP_LEVEL_README_URL",
+                                  ChangeEdownUrl, Cfg)
+              end.
+
+CfgEdownTarget = fun(Cfg) ->
+                         RunIfEnvVar("EDOWN_TARGET", ChangeEdownTarget, Cfg)
+                 end.
+
+%% Override edoc '@version' macro value to be current APP_VERSION.
+CfgVersion = fun(Cfg) ->
+                     case GetAppVersion() of
+                         Vsn when is_list(Vsn) ->
+                             DbgMsg("APP_VERSION: ~s~n", [Vsn]),
+                             VsnDef = {version, Vsn},
+                             Opts0 = proplists:get_value(edoc_opts, Cfg, []),
+                             Defs = case proplists:get_value(def, Opts0, []) of
+                                        Macros when is_list(Macros) ->
+                                            [VsnDef | Macros -- [VsnDef]];
+                                        {_Name, _Str} = Macro ->
+                                            [VsnDef | [Macro] -- [VsnDef]]
+                                    end,
+                             Opts = lists:keystore(def, 1, Opts0, {def, Defs}),
+                             lists:keystore(edoc_opts, 1, Cfg,
+                                            {edoc_opts, Opts});
+                         undefined ->
+                             Cfg
+                     end
+             end.
+
+CfgCtOverride = fun(Cfg) ->
+                        case os:getenv("CT_OVERRIDE") of
+                            false ->
+                                ConfigurePreHooks(Cfg);
+                            _ ->
+                                Cfg
+                        end
+                end.
+
+%%{pre_hooks, [{ct, "./pre_common_test_hook.sh"}]}.
 
 %% Common Test configuration: ensure that the CT long node name
 %% uses the current dns host name.
@@ -106,7 +192,14 @@ Cfg2 = case os:getenv("EDOWN_TOP_LEVEL_README_URL") of
 %%{pre_hooks, [{ct, "./pre_common_test_hook.sh"}]}.
 %%{ct_opts, [{spec, "apns_erlv3.test.spec"}]}.
 
-CfgFinal = ConfigurePreHooks(Cfg2),
-%Debug andalso io:format("rebar.config.script output:~n~p~n", [CfgFinal]),
-CfgFinal.
+%% Chain the config change functions
+RunChangeFuns = fun(Config) ->
+                        NC = lists:foldl(fun(F, Cfg) -> F(Cfg) end,
+                                         Config,
+                                         [CfgEdownUrl, CfgEdownTarget,
+                                          CfgVersion, CfgCtOverride]),
+                        DbgMsg("~p~n", [NC]),
+                        NC
+                end.
 
+RunChangeFuns(CONFIG).

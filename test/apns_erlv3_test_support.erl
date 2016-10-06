@@ -5,11 +5,31 @@
 
 -export([
          add_props/2,
-         check_parsed_resp/1,
+         check_parsed_resp/2,
          end_group/1,
          fix_all_cert_paths/2,
          fix_simulator_cert_paths/2,
          for_all_sessions/2,
+         format_str/2,
+         format_bin/2,
+         bin_prop/2,
+         rand_push_tok/0,
+         gen_uuid/0,
+         wait_for_response/2,
+         make_nf/1,
+         make_nf/2,
+         make_api_nf/2,
+         maybe_prop/2,
+         maybe_plist/2,
+         plist/3,
+         send_fun/4,
+         send_fun_nf/4,
+         gen_send_fun/4,
+         send_funs/2,
+         check_sync_resp/2,
+         check_async_resp/2,
+         check_match/2,
+         sim_nf_fun/2,
          is_uuid/1,
          make_aps_props/1,
          make_aps_props/2,
@@ -21,7 +41,7 @@
          reason_list/0,
          start_group/2,
          start_session/2,
-         start_simulator/3,
+         start_simulator/4,
          stop_session/3,
          to_bin_prop/2,
          value/2,
@@ -38,15 +58,40 @@ add_props(FromProps, ToProps) ->
     lists:foldl(fun(KV, Acc) -> add_prop(KV, Acc) end, ToProps, FromProps).
 
 %%--------------------------------------------------------------------
-check_parsed_resp(ParsedResp) ->
-    Keys = [id, status, status_desc, reason, reason_desc, body],
-    ok = assert_keys_present(Keys, ParsedResp),
-    case {value(status, ParsedResp), value(reason, ParsedResp)} of
-        {<<"410">>, <<"BadDeviceToken">>} ->
-            ok = assert_keys_present([timestamp, timestamp_desc], ParsedResp);
-        _ ->
-            ok
+check_parsed_resp(ParsedResp, ExpStatus) ->
+    ActualStatus = check_keys_present(ParsedResp),
+    check_status(ActualStatus, ExpStatus).
+
+%%--------------------------------------------------------------------
+check_keys_present(ParsedResp) ->
+    SuccessKeySet = [id, status, status_desc],
+    ErrorKeySet = SuccessKeySet ++ [reason, reason_desc, body],
+    AllKeySet = ErrorKeySet ++ [timestamp, timestamp_desc],
+
+    ActualStatus = value(status, ParsedResp),
+    Reason = value(reason, ParsedResp, undefined),
+    case {ActualStatus, Reason} of
+        {<<"200">>, undefined} ->
+            ok = assert_keys_present(SuccessKeySet, ParsedResp);
+        {<<"410">>, <<"Unregistered">>} ->
+            ok = assert_keys_present(AllKeySet, ParsedResp);
+        {_, _} when is_binary(Reason) ->
+            ok = assert_keys_present(ErrorKeySet, ParsedResp)
+    end,
+    ActualStatus.
+
+%%--------------------------------------------------------------------
+check_status(ActualStatus, CheckFun) when is_function(CheckFun, 1) ->
+    CheckFun(ActualStatus);
+check_status(ActualStatus, ExpStatus) ->
+    case ExpStatus of
+        any     ->  ok;
+        success -> ?assertEqual(ActualStatus, <<"200">>);
+        failure -> ?assertNotEqual(ActualStatus, <<"200">>);
+        _       -> ?assertEqual(ActualStatus, ExpStatus)
     end.
+
+%%--------------------------------------------------------------------
 
 %%--------------------------------------------------------------------
 end_group(Config) ->
@@ -74,8 +119,7 @@ fix_simulator_cert_paths(DataDir, SimConfig) ->
 
 %%--------------------------------------------------------------------
 for_all_sessions(Fun, Sessions) when is_function(Fun, 1), is_list(Sessions) ->
-    _ = [Fun(Session) || Session <- Sessions],
-    ok.
+    [Fun(Session) || Session <- Sessions].
 
 %%--------------------------------------------------------------------
 is_uuid(X) ->
@@ -98,11 +142,27 @@ make_aps_props(Alert, Badge, Sound) when is_integer(Badge) ->
 
 %%--------------------------------------------------------------------
 make_sim_notification(Notification, SimCfg) ->
+    case value(json, Notification, undefined) of
+        undefined ->
+            add_simcfg(Notification, SimCfg);
+        JSON0 ->
+            Nf = keys_binary_to_atom(jsx:decode(JSON0)),
+            NewNf = add_simcfg(Nf, SimCfg),
+            JSON = jsx:encode(NewNf),
+            lists:keystore(json, 1, Notification, {json, JSON})
+    end.
+
+add_simcfg(Notification, SimCfg) ->
     APS0 = value(aps, Notification, []),
     Extra0 = value(extra, APS0, []),
     Extra = lists:keystore(sim_cfg, 1, Extra0, {sim_cfg, SimCfg}),
     APS = lists:keystore(extra, 1, APS0, {extra, Extra}),
     lists:keystore(aps, 1, Notification, {aps, APS}).
+
+keys_binary_to_atom([{K, V}|Rest]) ->
+    [{sc_util:to_atom(K), keys_binary_to_atom(V)}|keys_binary_to_atom(Rest)];
+keys_binary_to_atom(V) ->
+    V.
 
 %%--------------------------------------------------------------------
 new_prop({_, _} = KV) ->
@@ -121,6 +181,7 @@ reason_list() ->
     [
      <<"BadCertificate">>,
      <<"BadCertificateEnvironment">>,
+     <<"BadCollapseId">>,
      <<"BadDeviceToken">>,
      <<"BadExpirationDate">>,
      <<"BadMessageId">>,
@@ -129,16 +190,20 @@ reason_list() ->
      <<"BadTopic">>,
      <<"DeviceTokenNotForTopic">>,
      <<"DuplicateHeaders">>,
+     <<"ExpiredProviderToken">>,
      <<"Forbidden">>,
      <<"IdleTimeout">>,
      <<"InternalServerError">>,
+     <<"InvalidProviderToken">>,
      <<"MethodNotAllowed">>,
      <<"MissingDeviceToken">>,
+     <<"MissingProviderToken">>,
      <<"MissingTopic">>,
      <<"PayloadEmpty">>,
      <<"PayloadTooLarge">>,
      <<"ServiceUnavailable">>,
      <<"Shutdown">>,
+     <<"TooManyProviderTokenUpdates">>,
      <<"TooManyRequests">>,
      <<"TopicDisallowed">>,
      <<"Unregistered">>
@@ -157,18 +222,46 @@ start_group(SessionStarter, Config) ->
 start_session(Opts, StartFun) when is_list(Opts),
                                    is_function(StartFun, 2) ->
     Name = value(name, Opts),
-    Config = value(config, Opts),
-    ct:pal("Starting session ~p with config ~p~n", [Name, Config]),
-    {ok, Pid} = StartFun(Name, Config),
-    MonRef = erlang:monitor(process, Pid),
-    ct:pal("Monitoring pid ~p with ref ~p", [Pid, MonRef]),
-    %% Check that session is actually started, or fail
-    wait_for_connected(Pid, 2000),
-    {ok, {Pid, MonRef}}.
+    case apns_erlv3_session_sup:get_child_pid(Name) of
+        undefined ->
+            Config = value(config, Opts),
+            ct:pal("Starting session ~p with config ~p~n", [Name, Config]),
+            {ok, Pid} = StartFun(Name, Config),
+            MonRef = erlang:monitor(process, Pid),
+            ct:pal("Monitoring pid ~p with ref ~p", [Pid, MonRef]),
+            %% Check that session is actually started, or fail
+            wait_for_connected(Pid, 2000),
+            {ok, {Pid, MonRef}};
+        Pid ->
+            {ok, {Pid, undefined}}
+    end.
+
+%%--------------------------------------------------------------------
+stop_session(SessCfg, StartedSessions, StopFun) when is_list(SessCfg),
+                                                     is_function(StopFun, 1) ->
+    Name = value(name, SessCfg),
+    case apns_erlv3_session_sup:get_child_pid(Name) of
+        undefined ->
+            ct:pal("Session ~p not running, no need to stop it", [Name]),
+            ok;
+        Pid ->
+            NPR = {Name, Pid, Ref} = session_info(SessCfg, StartedSessions),
+            ct:pal("Stopping session ~p pid: ~p ref: ~p", [Name, Pid, Ref]),
+            ok = StopFun(NPR),
+            receive
+                {'DOWN', _MRef, process, Pid, Reason} ->
+                    ct:pal("Received 'DOWN' from pid ~p, reason ~p",
+                           [Pid, Reason]),
+                    ok
+            after 2000 ->
+                      erlang:demonitor(Ref),
+                      {error, timeout}
+            end
+    end.
 
 %%--------------------------------------------------------------------
 %% SimConfig = [{ssl_options, []},{ssl_true}].
-start_simulator(Name, SimConfig, _PrivDir) ->
+start_simulator(Name, SimConfig, LagerEnv, _PrivDir) ->
     %% Get important code paths
     CodePaths = [Path || Path <- code:get_path(),
                          string:rstr(Path, "_build/") > 0],
@@ -187,6 +280,13 @@ start_simulator(Name, SimConfig, _PrivDir) ->
     ct:pal("~p", [CodePaths]),
     ok = rpc:call(Node, code, add_pathsz, [CodePaths], 1000),
 
+    %% Set lager environment
+    ct:pal("Setting lager environment"),
+    _ = [ok = rpc:call(Node, application, set_env,
+                       [lager, K, V], 1000) || {K, V} <- LagerEnv],
+    ActualLagerEnv = rpc:call(Node, application, get_all_env, [lager], 1000),
+    ct:pal("Sim's lager environment: ~p", [ActualLagerEnv]),
+
     ct:pal("Starting apns_erl_sim application on ~p", [Node]),
     {ok, L} = rpc:call(Node, application, ensure_all_started,
                        [apns_erl_sim], 5000),
@@ -195,22 +295,6 @@ start_simulator(Name, SimConfig, _PrivDir) ->
     ct:pal("Pausing ~p for 1000ms", [Node]),
     receive after 1000 -> ok end,
     {ok, L}.
-
-%%--------------------------------------------------------------------
-stop_session(SessCfg, StartedSessions, StopFun) when is_list(SessCfg),
-                                                     is_function(StopFun, 1) ->
-    NPR = {Name, Pid, Ref} = session_info(SessCfg, StartedSessions),
-    ct:pal("Stopping session ~p pid: ~p ref: ~p", [Name, Pid, Ref]),
-    ok = StopFun(NPR),
-    receive
-        {'DOWN', _MRef, process, Pid, Reason} ->
-            ct:pal("Received 'DOWN' from pid ~p, reason ~p",
-                   [Pid, Reason]),
-            ok
-    after 2000 ->
-              erlang:demonitor(Ref),
-              {error, timeout}
-    end.
 
 %%--------------------------------------------------------------------
 to_bin_prop(K, V) ->
@@ -419,4 +503,209 @@ session_info(SessCfg, StartedSessions) ->
     Name = value(name, SessCfg),
     {Pid, Ref} = value(Name, StartedSessions),
     {Name, Pid, Ref}.
+
+%%--------------------------------------------------------------------
+format_str(Fmt, Session) ->
+    format_str(Fmt, Session, []).
+
+format_str(Fmt, Session, Args) ->
+    format_str(Fmt, Session, Args, []).
+
+format_str([$%, $n|T], Session, Args, Acc) ->
+    Name = atom_to_list(?name(Session)),
+    format_str(T, Session, Args, [Name | Acc]);
+format_str([$%, $%|T], Session, Args, Acc) ->
+    format_str(T, Session, Args, [$% | Acc]);
+format_str([Ch|T], Session, Args, Acc) ->
+    format_str(T, Session, Args, [Ch | Acc]);
+format_str([], _Session, Args, Acc) ->
+    lists:flatten(io_lib:format(lists:reverse(Acc), Args)).
+
+%%--------------------------------------------------------------------
+format_bin(Fmt, Session) ->
+    format_bin(Fmt, Session, []).
+
+format_bin(Fmt, Session, Args) ->
+    sc_util:to_bin(format_str(Fmt, Session, Args)).
+
+%%--------------------------------------------------------------------
+bin_prop(K, PL) ->
+    sc_util:to_bin(value(K, PL)).
+
+%%--------------------------------------------------------------------
+rand_push_tok() ->
+    sc_util:bitstring_to_hex(crypto:rand_bytes(32)).
+
+%%--------------------------------------------------------------------
+gen_uuid() ->
+    apns_lib_http2:make_uuid().
+
+
+%%--------------------------------------------------------------------
+wait_for_response(UUID, Timeout) ->
+    receive
+        {apns_response, v3, {UUID, Resp}} ->
+            ct:pal("Received async apns v3 response, uuid: ~p, resp: ~p",
+                   [UUID, Resp]),
+            Resp
+    after Timeout ->
+              {error, timeout}
+    end.
+
+%%--------------------------------------------------------------------
+%% Make a notification [{token, binary()},
+%%                      {topic, binary()},
+%%                      {id, apns_lib_http2:uuid_str()},
+%%                      {priority, integer()},
+%%                      {expiry, integer()},
+%%                      {json, json()}
+%%                      ]
+%% by first converting the alert, badge and sound properties to JSON.
+%% The following items are defaulted if absent:
+%% alert - defaults to standard message
+%% token - defaults to token defined in test config
+%% extra - the keys in this optional dict will be inserted at the same level
+%%         as the aps dict, for example, if the input map is
+%%         #{alert => <<"foo">>, extra => [{simcfg, blah}]}, the JSON
+%%         will look like {"aps": {"alert": "foo"}, "simcfg": blah}.
+make_nf(Session) ->
+    make_nf(Session, #{}).
+
+make_nf(Session, #{} = Map) ->
+    OptApsProps = lists:foldl(fun(K, Acc) -> Acc ++ maybe_plist(K, Map) end,
+                              [], [badge, sound]),
+    DefAlert = format_bin("Testing svr '%n'", Session),
+    Alert = plist(alert, Map, DefAlert),
+    ApsProps = Alert ++ OptApsProps,
+    OptJsonProps = maybe_extra(Map),
+    JSON = jsx:encode([{aps, ApsProps}] ++ OptJsonProps),
+    OptProps = lists:foldl(fun(K, Acc) -> Acc ++ maybe_plist(K, Map) end,
+                           [], [topic, id, priority, expiry]),
+    Token = plist(token, Map, bin_prop(token, Session)),
+    Nf = Token ++ OptProps ++ [{json, JSON}],
+    {Nf, ?name(Session)}.
+
+maybe_extra(#{extra := Extra}) when is_list(Extra) ->
+    Extra;
+maybe_extra(#{}) ->
+    [].
+
+%%--------------------------------------------------------------------
+%% Make a notification
+%% [{alert, binary()}
+%%  {token, binary()},
+%%  {aps, [{badge, integer()},
+%%         {sound, binary()}]}]
+%% using the map elements alert and token, and optional elements
+%% badge and sound. If alert and token are omitted, they will be
+%% synthesized (token from the session config is the default).
+make_api_nf(Session, #{} = Map) ->
+    DefAlert = format_bin("Testing svr '%n'", Session),
+    DefToken = bin_prop(token, Session),
+    Nf = plist(alert, Map, DefAlert) ++ plist(token, Map, DefToken) ++
+         [{'aps', maybe_plist(badge, Map) ++ maybe_plist(sound, Map)}],
+    {Nf, ?name(Session)}.
+
+%%--------------------------------------------------------------------
+maybe_prop(_K, undefined) ->
+    [];
+maybe_prop(K, V) ->
+    [{K, V}].
+
+%%--------------------------------------------------------------------
+maybe_plist(Key, Map) ->
+    case maps:find(Key, Map) of
+        {ok, Val} ->
+            [{Key, Val}];
+        error ->
+            []
+    end.
+
+%%--------------------------------------------------------------------
+plist(Key, Map, Default) ->
+    case maps:find(Key, Map) of
+        {ok, Val} ->
+            [{Key, Val}];
+        error ->
+            [{Key, Default}]
+    end.
+
+%%--------------------------------------------------------------------
+send_fun(Mode, Type, #{} = Map, ExpStatus) when ?is_valid_mt(Mode, Type) ->
+    send_fun_nf(Mode, Type, ExpStatus,
+                fun(Session) -> make_nf(Session, Map) end).
+
+%%--------------------------------------------------------------------
+send_fun_nf(Mode, Type, ExpStatus,
+            MakeNfFun) when ?is_valid_mt(Mode, Type) andalso
+                            is_function(MakeNfFun, 1) ->
+    {SendFun, CheckRespFun} = send_funs(Mode, Type),
+    gen_send_fun(ExpStatus, MakeNfFun, SendFun, CheckRespFun).
+
+%%--------------------------------------------------------------------
+gen_send_fun(ExpStatus, MakeNfFun, SendFun,
+             CheckRespFun) when is_function(MakeNfFun, 1),
+                                is_function(SendFun, 2),
+                                is_function(CheckRespFun, 2) ->
+    fun(Session) ->
+            {Nf, Name} = MakeNfFun(Session),
+            ct:pal("Sending notification (session ~p): ~p", [Name, Nf]),
+            CheckRespFun(SendFun(Name, Nf), ExpStatus)
+    end.
+
+%%--------------------------------------------------------------------
+send_funs(sync,  session) -> {fun apns_erlv3_session:send/2,
+                              fun check_sync_resp/2};
+send_funs(async, session) -> {fun apns_erlv3_session:async_send/2,
+                              fun check_async_resp/2};
+send_funs(sync,  api)     -> {fun sc_push_svc_apnsv3:send/2,
+                              fun check_sync_resp/2};
+send_funs(async, api)     -> {fun sc_push_svc_apnsv3:async_send/2,
+                              fun check_async_resp/2}.
+
+%%--------------------------------------------------------------------
+check_sync_resp({ok, ParsedResp}, ExpStatus) ->
+    ct:pal("Sent sync notification, resp = ~p", [ParsedResp]),
+    check_parsed_resp(ParsedResp, ExpStatus),
+    UUID = value(id, ParsedResp),
+    true = is_uuid(UUID);
+check_sync_resp(Resp, ExpStatus) ->
+    ct:pal("Sent sync notification, error resp = ~p", [Resp]),
+    check_match(Resp, ExpStatus).
+
+%%--------------------------------------------------------------------
+check_async_resp({ok, {Action, UUID}}, ExpStatus) ->
+    ct:pal("Sent async notification, req was ~p (uuid: ~p)",
+           [Action, UUID]),
+    ?assert(lists:member(Action, [queued, submitted])),
+    case wait_for_response(UUID, 5000) of
+        {ok, ParsedResp} ->
+            ct:pal("Received async response ~p", [ParsedResp]),
+            check_parsed_resp(ParsedResp, ExpStatus),
+            UUID = value(id, ParsedResp),
+            true = is_uuid(UUID);
+        Error ->
+            ct:pal("Received async error result ~p", [Error]),
+            check_match(Error, ExpStatus)
+    end;
+check_async_resp(Resp, ExpStatus) ->
+    ct:pal("Received async error response ~p", [Resp]),
+    check_match(Resp, ExpStatus).
+
+check_match(Resp, CheckFun) when is_function(CheckFun, 1) ->
+    CheckFun(Resp);
+check_match(Resp, ExpStatus) ->
+    ?assertMatch(Resp, ExpStatus).
+
+%%--------------------------------------------------------------------
+%% Return fun that creates a notification containing an apns simulator
+%% configuration (to force a given response).
+sim_nf_fun(#{} = Map, #{reason := Reason} = SimMap) ->
+    fun(Session) ->
+            Alert = format_bin("Testing svr '%n', ~p.", Session, [Reason]),
+            SimCfg = [{reason, Reason}] ++ maybe_plist(status_code, SimMap),
+            NfMap = Map#{alert => Alert,
+                         extra => [{sim_cfg, SimCfg}]},
+            make_nf(Session, NfMap)
+    end.
 

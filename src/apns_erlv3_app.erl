@@ -33,10 +33,10 @@
 %%--------------------------------------------------------------------
 start(_StartType, _StartArgs) ->
     {ok, App} = application:get_application(?MODULE),
-    Opts = application:get_all_env(App),
-    lager:info("Starting app ~p with opts: ~p", [App, Opts]),
-    Sessions = sc_util:req_val(sessions, Opts),
-    Service = sc_util:req_val(service, Opts),
+    Env = application:get_all_env(App),
+    lager:info("Starting app ~p with env: ~p", [App, Env]),
+    Sessions = sc_util:req_val(sessions, Env),
+    Service = sc_util:req_val(service, Env),
     case sc_push_svc_apnsv3:start_link(Sessions) of
         {ok, _} = Res ->
             ok = sc_push_lib:register_service(Service),

@@ -18,7 +18,7 @@ __Authors:__ Edwin Fine ([`efine@silentcircle.com`](mailto:efine@silentcircle.co
 
 ## Description ##
 
-There must be one session per App Bundle ID and certificate (Development or
+There must be one session per App ID Suffix and certificate (Development or
 Production) combination. Sessions must have unique (i.e. they are
 registered) names within the node.
 
@@ -36,12 +36,12 @@ token if the error was due to a bad token.
 Process configuration:
 
 
-<dt><code>host</code>:</dt>
+<dt><code>host</code></dt>
 
 
 
 
-<dd>is the hostname of the APNS HTTP/2 service as a binary string. This may
+<dd>The hostname of the APNS HTTP/2 service as a binary string. This may
 be omitted as long as <code>apns_env</code> is present. In this case, the code will
 choose a default host using <code>apns_lib_http2:host_port/1</code> based on the
 environment.
@@ -49,12 +49,12 @@ environment.
 
 
 
-<dt><code>port</code>:</dt>
+<dt><code>port</code></dt>
 
 
 
 
-<dd>is the port of the APNS HTTP/2 service as a positive integer. This may
+<dd>The port of the APNS HTTP/2 service as a positive integer. This may
 be omitted as long as <code>apns_env</code> is present. In this case, the code will
 choose a default port using <code>apns_lib_http2:host_port/1</code> based on the
 environment.
@@ -62,36 +62,51 @@ environment.
 
 
 
-<dt><code>apns_env</code>:</dt>
+<dt><code>apns_env</code></dt>
 
 
 
 
-<dd>is the push notification environment. This can be either <code>'dev'</code>
-or <code>'prod'</code>. This is *mandatory* if either <code>host</code> or <code>port</code> are
-omitted. If
+<dd>The push notification environment. This can be either <code>'dev'</code>
+or <code>'prod'</code>. This is *mandatory*.
 </dd>
 
 
 
-<dt><code>bundle_seed_id</code>:</dt>
+<dt><code>team_id</code></dt>
 
 
 
 
-<dd>is the APNS bundle seed identifier as a binary. This is used to
-validate the APNS certificate unless <code>disable_apns_cert_validation</code>
-is <code>true</code>.
+<dd>The 10-character Team ID as a binary.  This is
+used for one of two purposes:
+<ul>
+<li>To validate the APNS certificate unless
+<code>disable_apns_cert_validation</code> is <code>true</code>.</li>
+<li>When this supports JWT authentication, it will be
+used as the Issuer (iss) in the JWT.</li>
+</ul>
 </dd>
 
 
 
-<dt><code>apns_topic</code>:</dt>
+<dt><code>app_id_suffix</code></dt>
 
 
 
 
-<dd><p>is the <b>default</b> APNS topic to which to push notifications. If a
+<dd>The AppID Suffix as a binary, usually in reverse DNS format.  This is
+used to validate the APNS certificate unless
+<code>disable_apns_cert_validation</code> is <code>true</code>.</dd>
+
+
+
+<dt><code>apns_topic</code></dt>
+
+
+
+
+<dd>The <b>default</b> APNS topic to which to push notifications. If a
 topic is provided in the notification, it always overrides the default.
 This must be one of the topics in <code>certfile</code>, otherwise the notifications
 will all fail, unless the topic is explicitly provided in the
@@ -100,55 +115,87 @@ notifications.
 If this is omitted and the certificate is a multi-topic certificate, the
 notification will fail unless the topic is provided in the actual push
 notification. Otherwise, with regular single-topic certificates, the
-first app bundle id in <code>certfile</code> is used.</p><p></p>Default value:
+first app id suffix in <code>certfile</code> is used.
+<br />
+Default value:
 <ul>
 <li>If multi-topic certificate: none (notification will fail)</li>
-<li>If NOT multi-topic certificate: First app bundle ID in <code>certfile</code></li>
+<li>If NOT multi-topic certificate: First app ID suffix in <code>certfile</code></li>
 </ul>
 </dd>
 
 
 
-<dt><code>retry_delay</code>:</dt>
+<dt><code>retry_strategy</code></dt>
 
 
 
 
-<dd><p>is the minimum time in milliseconds the session will wait before
-reconnecting to APNS servers as an integer; when reconnecting multiple
-times this value will be multiplied by 2 for every attempt.</p><p></p><p>Default value: <code>1000</code>.</p><p></p></dd>
-
-
-
-<dt><code>retry_max</code>:</dt>
-
-
-
-
-<dd><p>is the maximum amount of time in milliseconds that the session will wait
-before reconnecting to the APNS servers.</p><p></p><p>Default value: <code>60000</code>.</p><p></p></dd>
-
-
-
-<dt><code>disable_apns_cert_validation</code>:</dt>
-
-
-
-
-<dd><p>is <code>true</code> is APNS certificate validation against its bundle id
-should be disabled, <code>false</code> if the validation should be done.
-This option exists to allow for changes in APNS certificate layout
-without having to change code.</p><p></p>Default value: <code>false</code>.
+<dd>The strategy to be used when reattempting connection to APNS.
+Valid values are <code>exponential</code> and <code>fixed</code>.
+<ul>
+<li>When <code>fixed</code>, the same <code>retry_delay</code> is used for every reconnection attempt.</li>
+<li>When <code>exponential</code>, the <code>retry_delay</code> is multiplied by 2 after each
+unsuccessful attempt, up to <code>retry_max</code>.</li>
+</ul>
+<br />
+Default value: <code>exponential</code>.
 </dd>
 
 
 
-<dt><code>ssl_opts</code>:</dt>
+<dt><code>retry_delay</code></dt>
 
 
 
 
-<dd>is the property list of SSL options including the certificate file path.
+<dd>The minimum time in milliseconds the session will wait before
+reconnecting to APNS servers as an integer; when reconnecting multiple
+times this value will be multiplied by 2 for every attempt if
+<code>retry_strategy</code> is <code>exponential</code>.
+<br />
+Default value: <code>1000</code>.
+</dd>
+
+
+
+<dt><code>retry_max</code></dt>
+
+
+
+
+<dd>The maximum amount of time in milliseconds that the session will wait
+before reconnecting to the APNS servers. This serves to put an upper
+bound on <code>retry_delay</code>, and only really makes sense if using a non-fixed
+strategy.
+<br />
+Default value: <code>60000</code>.
+</dd>
+
+
+
+<dt><code>disable_apns_cert_validation</code></dt>
+
+
+
+
+<dd><code>true</code> if APNS certificate validation against its app id suffix and
+team ID should be disabled, <code>false</code> if the validation should be done.
+This option exists to allow for changes in APNS certificate layout
+without having to change code.
+<br />
+Default value: <code>false</code>.
+</dd>
+
+
+
+<dt><code>ssl_opts</code></dt>
+
+
+
+
+<dd>The property list of SSL options including the certificate file path.
+See <a href="http://erlang.org/doc/man/ssl.md" target="_top"><tt>http://erlang.org/doc/man/ssl.html</tt></a>.
 </dd>
 
 
@@ -158,27 +205,51 @@ without having to change code.</p><p></p>Default value: <code>false</code>.
 
 
 ```
-       [{host, "api.development.push.apple.com"},
-        {port, 443},
-        {apns_env, dev},
-        {bundle_seed_id, <<"com.example.MyApp">>},
-        {apns_topic, <<"com.example.MyApp">>},
-        {retry_delay, 1000},
-        {disable_apns_cert_validation, false},
-        {ssl_opts,
-         [{certfile, "/some/path/com.example.MyApp--DEV.cert.pem"},
-          {keyfile, "/some/path/com.example.MyApp--DEV.key.unencrypted.pem"},
-          {honor_cipher_order, false},
-          {versions, ['tlsv1.2']},
-          {alpn_preferred_protocols, [<<"h2">>]}].
-         ]}
-       ]
+   [{host, <<"api.push.apple.com">>},
+    {port, 443},
+    {apns_env, prod},
+    {apns_topic, <<"com.example.MyApp">>},
+    {app_id_suffix, <<"com.example.MyApp">>},
+    {team_id, <<"6F44JJ9SDF">>},
+    {retry_strategy, exponential},
+    {retry_delay, 1000},
+    {retry_max, 60000},
+    {disable_apns_cert_validation, false},
+    {ssl_opts,
+     [{certfile, "/some/path/com.example.MyApp.cert.pem"},
+      {keyfile, "/some/path/com.example.MyApp.key.unencrypted.pem"},
+      {cacertfile, "/etc/ssl/certs/ca-certificates.crt"},
+      {honor_cipher_order, false},
+      {versions, ['tlsv1.2']},
+      {alpn_preferred_protocols, [<<"h2">>]}].
+     ]}
+   ]
 ```
 
 
 <a name="types"></a>
 
 ## Data Types ##
+
+
+
+
+### <a name="type-async_send_reply">async_send_reply()</a> ###
+
+
+<pre><code>
+async_send_reply() = {ok, <a href="#type-async_send_result">async_send_result()</a>} | {error, term()}
+</code></pre>
+
+
+
+
+### <a name="type-async_send_result">async_send_result()</a> ###
+
+
+<pre><code>
+async_send_result() = <a href="#type-queued_result">queued_result()</a> | <a href="#type-submitted_result">submitted_result()</a>
+</code></pre>
 
 
 
@@ -191,6 +262,36 @@ bstrtok() = binary()
 </code></pre>
 
  binary of string rep of APNS token.
+
+
+
+### <a name="type-caller">caller()</a> ###
+
+
+<pre><code>
+caller() = pid() | {pid(), term()}
+</code></pre>
+
+
+
+
+### <a name="type-cb_req">cb_req()</a> ###
+
+
+<pre><code>
+cb_req() = <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-http2_req">apns_lib_http2:http2_req()</a>
+</code></pre>
+
+
+
+
+### <a name="type-cb_result">cb_result()</a> ###
+
+
+<pre><code>
+cb_result() = {ok, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-parsed_rsp">apns_lib_http2:parsed_rsp()</a>} | {error, term()}
+</code></pre>
+
 
 
 
@@ -208,7 +309,7 @@ fsm_ref() = atom() | pid()
 
 
 <pre><code>
-option() = {host, string()} | {port, non_neg_integer()} | {bundle_seed_id, binary()} | {apns_env, prod | dev} | {apns_topic, binary()} | {ssl_opts, list()} | {retry_delay, non_neg_integer()} | {retry_max, pos_integer()}
+option() = {host, binary()} | {port, non_neg_integer()} | {app_id_suffix, binary()} | {team_id, binary()} | {apns_env, prod | dev} | {apns_topic, binary()} | {disable_apns_cert_validation, boolean()} | {ssl_opts, list()} | {retry_delay, non_neg_integer()} | {retry_max, pos_integer()} | {retry_strategy, fixed | exponential}
 </code></pre>
 
 
@@ -224,11 +325,41 @@ options() = [<a href="#type-option">option()</a>]
 
 
 
+### <a name="type-queued_result">queued_result()</a> ###
+
+
+<pre><code>
+queued_result() = {queued, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-uuid_str">apns_lib_http2:uuid_str()</a>}
+</code></pre>
+
+
+
+
+### <a name="type-reply_fun">reply_fun()</a> ###
+
+
+<pre><code>
+reply_fun() = fun((<a href="#type-caller">caller()</a>, <a href="#type-uuid_str">uuid_str()</a>, <a href="#type-cb_result">cb_result()</a>) -&gt; none())
+</code></pre>
+
+
+
+
+### <a name="type-send_callback">send_callback()</a> ###
+
+
+<pre><code>
+send_callback() = fun((list(), <a href="#type-cb_req">cb_req()</a>, <a href="#type-cb_result">cb_result()</a>) -&gt; term())
+</code></pre>
+
+
+
+
 ### <a name="type-send_opt">send_opt()</a> ###
 
 
 <pre><code>
-send_opt() = {token, <a href="#type-bstrtok">bstrtok()</a>} | {topic, binary()} | {id, <a href="/home/efine/work/sc/open_source/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-uuid_str">apns_lib_http2:uuid_str()</a>} | {priority, integer()} | {expiry, integer()} | {json, binary()}
+send_opt() = {token, <a href="#type-bstrtok">bstrtok()</a>} | {topic, binary()} | {id, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-uuid_str">apns_lib_http2:uuid_str()</a>} | {priority, integer()} | {expiry, integer()} | {json, binary()}
 </code></pre>
 
 
@@ -241,14 +372,64 @@ send_opt() = {token, <a href="#type-bstrtok">bstrtok()</a>} | {topic, binary()} 
 send_opts() = [<a href="#type-send_opt">send_opt()</a>]
 </code></pre>
 
+
+
+
+### <a name="type-submitted_result">submitted_result()</a> ###
+
+
+<pre><code>
+submitted_result() = {submitted, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-uuid_str">apns_lib_http2:uuid_str()</a>}
+</code></pre>
+
+
+
+
+### <a name="type-sync_result">sync_result()</a> ###
+
+
+<pre><code>
+sync_result() = {result, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-parsed_rsp">apns_lib_http2:parsed_rsp()</a>}
+</code></pre>
+
+
+
+
+### <a name="type-sync_send_reply">sync_send_reply()</a> ###
+
+
+<pre><code>
+sync_send_reply() = {ok, <a href="#type-sync_send_result">sync_send_result()</a>} | {error, term()}
+</code></pre>
+
+
+
+
+### <a name="type-sync_send_result">sync_send_result()</a> ###
+
+
+<pre><code>
+sync_send_result() = <a href="#type-sync_result">sync_result()</a>
+</code></pre>
+
+
+
+
+### <a name="type-uuid_str">uuid_str()</a> ###
+
+
+<pre><code>
+uuid_str() = <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-uuid_str">apns_lib_http2:uuid_str()</a>
+</code></pre>
+
 <a name="index"></a>
 
 ## Function Index ##
 
 
-<table width="100%" border="1" cellspacing="0" cellpadding="2" summary="function index"><tr><td valign="top"><a href="#async_send-2">async_send/2</a></td><td>Asynchronously send notification in <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#async_send-3">async_send/3</a></td><td></td></tr><tr><td valign="top"><a href="#async_send-4">async_send/4</a></td><td>Send a push notification asynchronously.</td></tr><tr><td valign="top"><a href="#async_send-5">async_send/5</a></td><td>Send a push notification asynchronously.</td></tr><tr><td valign="top"><a href="#code_change-4">code_change/4</a></td><td></td></tr><tr><td valign="top"><a href="#connected-2">connected/2</a></td><td></td></tr><tr><td valign="top"><a href="#connected-3">connected/3</a></td><td></td></tr><tr><td valign="top"><a href="#connecting-2">connecting/2</a></td><td></td></tr><tr><td valign="top"><a href="#connecting-3">connecting/3</a></td><td></td></tr><tr><td valign="top"><a href="#disconnecting-2">disconnecting/2</a></td><td></td></tr><tr><td valign="top"><a href="#disconnecting-3">disconnecting/3</a></td><td></td></tr><tr><td valign="top"><a href="#get_state-1">get_state/1</a></td><td></td></tr><tr><td valign="top"><a href="#get_state_name-1">get_state_name/1</a></td><td></td></tr><tr><td valign="top"><a href="#handle_event-3">handle_event/3</a></td><td></td></tr><tr><td valign="top"><a href="#handle_info-3">handle_info/3</a></td><td></td></tr><tr><td valign="top"><a href="#handle_sync_event-4">handle_sync_event/4</a></td><td></td></tr><tr><td valign="top"><a href="#init-1">init/1</a></td><td></td></tr><tr><td valign="top"><a href="#is_connected-1">is_connected/1</a></td><td></td></tr><tr><td valign="top"><a href="#send-2">send/2</a></td><td></td></tr><tr><td valign="top"><a href="#send-3">send/3</a></td><td>Equivalent to <a href="#send-4"><tt>send(FsmRef, 2147483647, Token, JSON)</tt></a>.</td></tr><tr><td valign="top"><a href="#send-4">send/4</a></td><td>Send a notification specified by APS <code>JSON</code> to <code>Token</code> via
-<code>FsmRef</code>.</td></tr><tr><td valign="top"><a href="#send-5">send/5</a></td><td>Send a notification specified by APS <code>JSON</code> to <code>Token</code> via
-<code>FsmRef</code>.</td></tr><tr><td valign="top"><a href="#start-2">start/2</a></td><td>Start a named session as described by the options <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#start_link-2">start_link/2</a></td><td>Start a named session as described by the options <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#stop-1">stop/1</a></td><td>Stop session.</td></tr><tr><td valign="top"><a href="#terminate-3">terminate/3</a></td><td></td></tr><tr><td valign="top"><a href="#validate_binary-2">validate_binary/2</a></td><td></td></tr><tr><td valign="top"><a href="#validate_boolean-2">validate_boolean/2</a></td><td></td></tr><tr><td valign="top"><a href="#validate_integer-2">validate_integer/2</a></td><td></td></tr><tr><td valign="top"><a href="#validate_list-2">validate_list/2</a></td><td></td></tr><tr><td valign="top"><a href="#validate_non_neg-2">validate_non_neg/2</a></td><td></td></tr></table>
+<table width="100%" border="1" cellspacing="0" cellpadding="2" summary="function index"><tr><td valign="top"><a href="#async_send-2">async_send/2</a></td><td>Asynchronously send notification in <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#async_send-3">async_send/3</a></td><td>Asynchronously send notification in <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#async_send_callback-3">async_send_callback/3</a></td><td>Standard async callback function.</td></tr><tr><td valign="top"><a href="#async_send_cb-4">async_send_cb/4</a></td><td>Asynchronously send notification in <code>Opts</code> with user-defined
+callback function.</td></tr><tr><td valign="top"><a href="#get_state-1">get_state/1</a></td><td>Get the current state of the FSM.</td></tr><tr><td valign="top"><a href="#get_state_name-1">get_state_name/1</a></td><td>Get the name of the current state of the FSM.</td></tr><tr><td valign="top"><a href="#is_connected-1">is_connected/1</a></td><td>Return <code>true</code> if the session is connected, <code>false</code> otherwise.</td></tr><tr><td valign="top"><a href="#quiesce-1">quiesce/1</a></td><td>Quiesce a session.</td></tr><tr><td valign="top"><a href="#reconnect-1">reconnect/1</a></td><td>Immediately disconnect the session and reconnect.</td></tr><tr><td valign="top"><a href="#reconnect-2">reconnect/2</a></td><td>Immediately disconnect the session and reconnect after <code>Delay</code> ms.</td></tr><tr><td valign="top"><a href="#resume-1">resume/1</a></td><td>Resume a quiesced session.</td></tr><tr><td valign="top"><a href="#send-2">send/2</a></td><td>Send a notification specified by <code>Nf</code> with options <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#send_cb-3">send_cb/3</a></td><td>Send a notification specified by <code>Nf</code> and a user-supplied callback
+function.</td></tr><tr><td valign="top"><a href="#start-2">start/2</a></td><td>Start a named session as described by the options <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#start_link-2">start_link/2</a></td><td>Start a named session as described by the options <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#stop-1">stop/1</a></td><td>Stop session.</td></tr><tr><td valign="top"><a href="#sync_send_callback-3">sync_send_callback/3</a></td><td>Standard sync callback function.</td></tr></table>
 
 
 <a name="functions"></a>
@@ -260,90 +441,247 @@ send_opts() = [<a href="#type-send_opt">send_opt()</a>]
 ### async_send/2 ###
 
 <pre><code>
-async_send(FsmRef, Opts) -&gt; {ok, UUID} | {error, term()}
+async_send(FsmRef, Opts) -&gt; Result
 </code></pre>
 
-<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>Opts = <a href="#type-send_opts">send_opts()</a></code></li><li><code>UUID = <a href="/home/efine/work/sc/open_source/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-uuid_str">apns_lib_http2:uuid_str()</a></code></li></ul>
+<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>Opts = <a href="#type-send_opts">send_opts()</a></code></li><li><code>Result = <a href="#type-async_send_reply">async_send_reply()</a></code></li></ul>
 
 Asynchronously send notification in `Opts`.
-Return UUID of request or error. If `id` is not provided in `Opts`,
-generate a UUID for this request.
+If `id` is not provided in `Opts`, generate a UUID.  When a response is
+received from APNS, send it to the caller's process as a message in the
+format `{apns_response, v3, {UUID, Resp :: cb_result()}}`.
 
 <a name="async_send-3"></a>
 
 ### async_send/3 ###
 
 <pre><code>
-async_send(FsmRef, Token, JSON) -&gt; ok
+async_send(FsmRef, ReplyPid, Opts) -&gt; Result
 </code></pre>
 
-<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>Token = binary()</code></li><li><code>JSON = binary()</code></li></ul>
+<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>ReplyPid = pid()</code></li><li><code>Opts = <a href="#type-send_opts">send_opts()</a></code></li><li><code>Result = <a href="#type-async_send_reply">async_send_reply()</a></code></li></ul>
 
-<a name="async_send-4"></a>
+Asynchronously send notification in `Opts`.
+If `id` is not provided in `Opts`, generate a UUID.  When a response is
+received from APNS, send it to the caller's process as a message in the
+format `{apns_response, v3, {UUID, Resp :: cb_result()}}`.
 
-### async_send/4 ###
+__See also:__ [async_send/1](#async_send-1).
+
+<a name="async_send_callback-3"></a>
+
+### async_send_callback/3 ###
 
 <pre><code>
-async_send(FsmRef, Expiry, Token, JSON) -&gt; ok
+async_send_callback(NfPL, Req, Resp) -&gt; Result
 </code></pre>
 
-<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>Expiry = non_neg_integer()</code></li><li><code>Token = binary()</code></li><li><code>JSON = binary()</code></li></ul>
+<ul class="definitions"><li><code>NfPL = [{atom(), term()}]</code></li><li><code>Req = <a href="#type-cb_req">cb_req()</a></code></li><li><code>Resp = <a href="#type-cb_result">cb_result()</a></code></li><li><code>Result = <a href="#type-cb_result">cb_result()</a></code></li></ul>
 
-Send a push notification asynchronously. See send/4 for details.
+Standard async callback function. This is not normally needed
+outside of this module.
 
-<a name="async_send-5"></a>
+__See also:__ [async_send_cb/1](#async_send_cb-1).
 
-### async_send/5 ###
+<a name="async_send_cb-4"></a>
+
+### async_send_cb/4 ###
 
 <pre><code>
-async_send(FsmRef, Expiry, Token, JSON, Prio) -&gt; ok
+async_send_cb(FsmRef, ReplyPid, Opts, Callback) -&gt; Result
 </code></pre>
 
-<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>Expiry = non_neg_integer()</code></li><li><code>Token = binary()</code></li><li><code>JSON = binary()</code></li><li><code>Prio = non_neg_integer()</code></li></ul>
+<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>ReplyPid = pid()</code></li><li><code>Opts = <a href="#type-send_opts">send_opts()</a></code></li><li><code>Callback = <a href="#type-send_callback">send_callback()</a></code></li><li><code>Result = <a href="#type-async_send_reply">async_send_reply()</a></code></li></ul>
 
-Send a push notification asynchronously. See send/5 for details.
+Asynchronously send notification in `Opts` with user-defined
+callback function. If `id` is not provided in `Opts`, generate a UUID.
+When the request has completed, invoke the user-defined callback
+function.
 
-<a name="code_change-4"></a>
+Note that there are different returns depending on the state of the
+session.
 
-### code_change/4 ###
+If the session has been quiesced by calling quiesce/1, all
+subsequent attempts to send notifications will receive `{error, quiesced}`
+responses.
 
-`code_change(OldVsn, StateName, State, Extra) -> any()`
+If the session is busy connecting to APNS (or disconnecting from APNS),
+attempts to send will receive a response, `{ok, {queued, UUID ::
+binary()}}`. The `queued` status means that the notification is being held
+until the session is able to connect to APNS, at which time it will be
+submitted. Queued notifications can be lost if the session is stopped
+without connecting.
 
-<a name="connected-2"></a>
+If the session is already connected (and not quiesced), and the notification
+passes preliminary validation, attempts to send will receive a response
+`{ok, {submitted, UUID :: binary()}}`.  This means that the notification has
+been accepted by the HTTP/2 client for asynchronous processing, and the
+callback function will be invoked at completion.
 
-### connected/2 ###
 
-`connected(Event, State) -> any()`
+### <a name="Timeouts">Timeouts</a> ###
 
-<a name="connected-3"></a>
+There are multiple kinds of timeouts.
 
-### connected/3 ###
+If the session itself is so busy that the send request cannot be processed in time,
+a timeout error will occur. The default Erlang call timeout is applicable here.
 
-`connected(Event, From, State) -> any()`
+An asynchronous timeout feature is planned but not currently implemented.
 
-<a name="connecting-2"></a>
 
-### connecting/2 ###
+### <a name="Callback_function">Callback function</a> ###
 
-`connecting(Event, State) -> any()`
+The callback function provided must have the following form:
 
-<a name="connecting-3"></a>
+```
+  fun(NfPL, Req, Resp) -> any().
+```
 
-### connecting/3 ###
+The function return value is ignored. Throw an exception or raise an error
+to indicate callback failure instead.
 
-`connecting(Event, From, State) -> any()`
 
-<a name="disconnecting-2"></a>
+#### <a name="Function_Parameters">Function Parameters</a> ####
 
-### disconnecting/2 ###
 
-`disconnecting(Event, State) -> any()`
 
-<a name="disconnecting-3"></a>
+<dt><code>NfPL :: [{atom(), binary() | non_neg_integer() | {pid(), any()}</code></dt>
 
-### disconnecting/3 ###
 
-`disconnecting(Event, From, State) -> any()`
+
+
+<dd>The notification data as a proplist. See below for a description.</dd>
+
+
+
+
+<dt><code>Req :: {Headers :: [{binary(), binary()}], Body :: binary()}</code></dt>
+
+
+
+
+<dd>The original request headers and data</dd>
+
+
+
+
+<dt><code>Resp :: {ok, ParsedRsp} | {error, any()}</code></dt>
+
+
+
+
+<dd>The APNS response.  See "Parsed Response Property List" below for
+more detail.</dd>
+
+
+
+**Sample request headers**
+
+```
+  [
+   {<<":method">>, <<"POST">>},
+   {<<":path">>, <<"/3/device/ca6a7fef19bcf22c38d5bee0c29f80d9461b2848061f0f4f0c0d361e4c4f1dc2">>},
+   {<<":scheme">>, <<"https">>},
+   {<<"apns-topic">>, <<"com.example.FakeApp.voip">>},
+   {<<"apns-expiration">>, <<"2147483647">>},
+   {<<"apns-id">>, <<"519d99ac-1bb0-42df-8381-e6979ce7cd32">>}
+  ]
+```
+
+
+#### <a name="Notification_Property_List">Notification Property List</a> ####
+
+```
+   [{id, binary()()},              % UUID string
+    {expiration, non_neg_integer()},
+    {token, binary()},             % Hex string
+    {topic, binary()},             % String
+    {json, binary()},              % JSON string
+    {from, {pid(), Tag :: any()}}, % Caller
+    {priority, non_neg_integer()}
+    ].
+```
+
+**Sample JSON string (formatted)**
+
+```
+  {
+    "aps": {
+      "alert": "Some alert string",
+      "content-available": 1
+    }
+  }
+```
+
+
+#### <a name="Parsed_Response_Property_List">Parsed Response Property List</a> ####
+
+The properties present in the list depend on the status code.
+
+* __Always present__: `id`, `status`, `status_desc`.
+
+* __Also present for 4xx, 5xx status__: `reason`, `reason_desc`,
+`body`.
+
+* __Also present, but only for 410 status__: `timestamp`,
+`timestamp_desc`.
+
+
+See `apns_lib_http2:parsed_rsp()`.
+
+```
+  [
+   {id, binary()},              % UUID string
+   {status, binary()},          % HTTP/2 status string, e.g. <<"200">>.
+   {status_desc, binary()},     % Status description string
+   {reason, binary()},          % Reason string
+   {reason_desc, binary()},     % Reason description
+   {timestamp, non_neg_integer()},
+   {timestamp_desc, binary()},  % Timestamp description
+   {body, term()}               % Parsed APNS response body
+  ]
+```
+
+**Sample success return**
+
+```
+  [
+   {id,
+    <<"d013d454-b1d0-469a-96d3-52e0c5ec4281">>},
+   {status,<<"200">>},
+   {status_desc,<<"Success">>}
+  ]
+```
+
+**Sample status 400 return**
+
+```
+  [
+   {id,<<"519d99ac-1bb0-42df-8381-e6979ce7cd32">>},
+   {status,<<"400">>},
+   {status_desc,<<"Bad request">>},
+   {reason,<<"BadDeviceToken">>},
+   {reason_desc,<<"The specified device token was bad...">>},
+   {body,[{<<"reason">>,<<"BadDeviceToken">>}]}
+  ]
+```
+
+**Sample status 410 return**
+
+```
+  [
+   {id,<<"7824c0f2-a5e6-4c76-9699-45ac477e64d2">>},
+   {status,<<"410">>},
+   {status_desc,<<"The device token is no longer active for the topic.">>},
+   {reason,<<"Unregistered">>},
+   {reason_desc,<<"The device token is inactive for the specified topic.">>},
+   {timestamp,1475784832119},
+   {timestamp_desc,<<"2016-10-06T20:13:52Z">>},
+   {body,[{<<"reason">>,<<"Unregistered">>},
+          {<<"timestamp">>,1475784832119}]}
+  ]
+```
+
 
 <a name="get_state-1"></a>
 
@@ -351,41 +689,66 @@ Send a push notification asynchronously. See send/5 for details.
 
 `get_state(FsmRef) -> any()`
 
+Get the current state of the FSM.
+
 <a name="get_state_name-1"></a>
 
 ### get_state_name/1 ###
 
 `get_state_name(FsmRef) -> any()`
 
-<a name="handle_event-3"></a>
-
-### handle_event/3 ###
-
-`handle_event(Event, StateName, State) -> any()`
-
-<a name="handle_info-3"></a>
-
-### handle_info/3 ###
-
-`handle_info(Info, StateName, ?S) -> any()`
-
-<a name="handle_sync_event-4"></a>
-
-### handle_sync_event/4 ###
-
-`handle_sync_event(Event, From, StateName, State) -> any()`
-
-<a name="init-1"></a>
-
-### init/1 ###
-
-`init(X1) -> any()`
+Get the name of the current state of the FSM.
 
 <a name="is_connected-1"></a>
 
 ### is_connected/1 ###
 
 `is_connected(FsmRef) -> any()`
+
+Return `true` if the session is connected, `false` otherwise.
+
+<a name="quiesce-1"></a>
+
+### quiesce/1 ###
+
+<pre><code>
+quiesce(FsmRef) -&gt; Result
+</code></pre>
+
+<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>Result = ok | {error, term()}</code></li></ul>
+
+Quiesce a session. This put sthe session into a mode
+where all subsequent requests are rejected with `{error, quiesced}`.
+
+<a name="reconnect-1"></a>
+
+### reconnect/1 ###
+
+`reconnect(FsmRef) -> any()`
+
+Immediately disconnect the session and reconnect.
+
+<a name="reconnect-2"></a>
+
+### reconnect/2 ###
+
+`reconnect(FsmRef, Delay) -> any()`
+
+Immediately disconnect the session and reconnect after `Delay` ms.
+
+<a name="resume-1"></a>
+
+### resume/1 ###
+
+<pre><code>
+resume(FsmRef) -&gt; Result
+</code></pre>
+
+<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>Result = ok | {error, term()}</code></li></ul>
+
+Resume a quiesced session.
+
+__See also:__ [quiesce/1](#quiesce-1).
 
 <a name="send-2"></a>
 
@@ -395,59 +758,22 @@ Send a push notification asynchronously. See send/5 for details.
 send(FsmRef, Opts) -&gt; Result
 </code></pre>
 
-<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>Opts = <a href="#type-send_opts">send_opts()</a></code></li><li><code>Result = {ok, undefined | UUID} | {error, Reason}</code></li><li><code>UUID = <a href="/home/efine/work/sc/open_source/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-uuid_str">apns_lib_http2:uuid_str()</a></code></li><li><code>Reason = term()</code></li></ul>
+<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>Opts = <a href="#type-send_opts">send_opts()</a></code></li><li><code>Result = <a href="#type-sync_send_reply">sync_send_reply()</a></code></li></ul>
 
-<a name="send-3"></a>
+Send a notification specified by `Nf` with options `Opts`.
 
-### send/3 ###
+<a name="send_cb-3"></a>
 
-<pre><code>
-send(FsmRef, Token, JSON) -&gt; {ok, undefined | UUID} | {error, Reason}
-</code></pre>
-
-<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>Token = binary()</code></li><li><code>JSON = binary()</code></li><li><code>UUID = <a href="/home/efine/work/sc/open_source/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-uuid_str">apns_lib_http2:uuid_str()</a></code></li><li><code>Reason = term()</code></li></ul>
-
-Equivalent to [`send(FsmRef, 2147483647, Token, JSON)`](#send-4).
-
-<a name="send-4"></a>
-
-### send/4 ###
+### send_cb/3 ###
 
 <pre><code>
-send(FsmRef, Expiry, Token, JSON) -&gt; {ok, undefined | UUID} | {error, Reason}
+send_cb(FsmRef, Opts, Callback) -&gt; Result
 </code></pre>
 
-<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>Expiry = non_neg_integer()</code></li><li><code>Token = binary()</code></li><li><code>JSON = binary()</code></li><li><code>UUID = <a href="/home/efine/work/sc/open_source/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-uuid_str">apns_lib_http2:uuid_str()</a></code></li><li><code>Reason = term()</code></li></ul>
+<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>Opts = <a href="#type-send_opts">send_opts()</a></code></li><li><code>Callback = <a href="#type-send_callback">send_callback()</a></code></li><li><code>Result = <a href="#type-sync_send_reply">sync_send_reply()</a></code></li></ul>
 
-Send a notification specified by APS `JSON` to `Token` via
-`FsmRef`. Expire the notification after the epoch `Expiry`.
-For JSON format, see
-[
-Local and Push Notification Programming Guide
-](https://developer.apple.com/library/ios/#documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/) (requires Apple Developer login).
-
-It the notification has been sent to an APNS server, the function returns
-its UUID, if it has been queued but could not be sent before
-the default timeout (5000 ms) it returns undefined.
-
-<a name="send-5"></a>
-
-### send/5 ###
-
-<pre><code>
-send(FsmRef, Expiry, Token, JSON, Prio) -&gt; Result
-</code></pre>
-
-<ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>Expiry = non_neg_integer()</code></li><li><code>Token = binary()</code></li><li><code>JSON = binary()</code></li><li><code>Prio = non_neg_integer()</code></li><li><code>Result = {ok, Resp} | {error, Reason}</code></li><li><code>Resp = <a href="/home/efine/work/sc/open_source/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-parsed_rsp">apns_lib_http2:parsed_rsp()</a></code></li><li><code>Reason = term()</code></li></ul>
-
-Send a notification specified by APS `JSON` to `Token` via
-`FsmRef`. Expire the notification after the epoch `Expiry`.
-Set the priority to a valid value of `Prio` (currently 5 or 10,
-10 may not be used to push notifications without alert, badge or sound).
-
-If the notification has been sent to an APNS server, the function returns
-its UUID, if it has been queued but could not be sent before
-the default timeout (5000 ms) it returns undefined.
+Send a notification specified by `Nf` and a user-supplied callback
+function.
 
 <a name="start-2"></a>
 
@@ -490,59 +816,18 @@ stop(FsmRef) -&gt; ok
 
 Stop session.
 
-<a name="terminate-3"></a>
+<a name="sync_send_callback-3"></a>
 
-### terminate/3 ###
-
-`terminate(Reason, StateName, State) -> any()`
-
-<a name="validate_binary-2"></a>
-
-### validate_binary/2 ###
+### sync_send_callback/3 ###
 
 <pre><code>
-validate_binary(Name, Value) -&gt; Value
+sync_send_callback(NfPL, Req, Resp) -&gt; Result
 </code></pre>
 
-<ul class="definitions"><li><code>Name = atom()</code></li><li><code>Value = binary()</code></li></ul>
+<ul class="definitions"><li><code>NfPL = [{atom(), term()}]</code></li><li><code>Req = <a href="#type-cb_req">cb_req()</a></code></li><li><code>Resp = <a href="#type-cb_result">cb_result()</a></code></li><li><code>Result = <a href="#type-cb_result">cb_result()</a></code></li></ul>
 
-<a name="validate_boolean-2"></a>
+Standard sync callback function. This is not normally needed
+outside of this module.
 
-### validate_boolean/2 ###
-
-<pre><code>
-validate_boolean(Name, Value) -&gt; Value
-</code></pre>
-
-<ul class="definitions"><li><code>Name = atom()</code></li><li><code>Value = boolean()</code></li></ul>
-
-<a name="validate_integer-2"></a>
-
-### validate_integer/2 ###
-
-<pre><code>
-validate_integer(Name, Value) -&gt; Value
-</code></pre>
-
-<ul class="definitions"><li><code>Name = atom()</code></li><li><code>Value = term()</code></li></ul>
-
-<a name="validate_list-2"></a>
-
-### validate_list/2 ###
-
-<pre><code>
-validate_list(Name, Value) -&gt; Value
-</code></pre>
-
-<ul class="definitions"><li><code>Name = atom()</code></li><li><code>Value = list()</code></li></ul>
-
-<a name="validate_non_neg-2"></a>
-
-### validate_non_neg/2 ###
-
-<pre><code>
-validate_non_neg(Name, Value) -&gt; Value
-</code></pre>
-
-<ul class="definitions"><li><code>Name = atom()</code></li><li><code>Value = non_neg_integer()</code></li></ul>
+__See also:__ [send_cb/1](#send_cb-1).
 
