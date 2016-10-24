@@ -36,7 +36,7 @@
   1},
  {<<"sc_push_lib">>,
   {git,"git@github.com:SilentCircle/sc_push_lib.git",
-       {ref,"02cee7c7cd3f33ce88a3d4bab29ab084baec59e3"}},
+       {ref,"f723967d1d647aa2a03e1bc6bccae08ba26008c3"}},
   0},
  {<<"sc_util">>,
   {git,"git@github.com:SilentCircle/sc_util.git",
