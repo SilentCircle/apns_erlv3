@@ -43,6 +43,8 @@
          start_session/2,
          start_simulator/4,
          stop_session/3,
+         uuid_to_str/1,
+         str_to_uuid/1,
          to_bin_prop/2,
          value/2,
          value/3,
@@ -64,7 +66,7 @@ check_parsed_resp(ParsedResp, ExpStatus) ->
 
 %%--------------------------------------------------------------------
 check_keys_present(ParsedResp) ->
-    SuccessKeySet = [id, status, status_desc],
+    SuccessKeySet = [uuid, status, status_desc],
     ErrorKeySet = SuccessKeySet ++ [reason, reason_desc, body],
     AllKeySet = ErrorKeySet ++ [timestamp, timestamp_desc],
 
@@ -555,7 +557,7 @@ wait_for_response(UUID, Timeout) ->
 %%--------------------------------------------------------------------
 %% Make a notification [{token, binary()},
 %%                      {topic, binary()},
-%%                      {id, apns_lib_http2:uuid_str()},
+%%                      {uuid, apns_lib_http2:uuid_str()},
 %%                      {priority, integer()},
 %%                      {expiry, integer()},
 %%                      {json, json()}
@@ -580,7 +582,7 @@ make_nf(Session, #{} = Map) ->
     OptJsonProps = maybe_extra(Map),
     JSON = jsx:encode([{aps, ApsProps}] ++ OptJsonProps),
     OptProps = lists:foldl(fun(K, Acc) -> Acc ++ maybe_plist(K, Map) end,
-                           [], [topic, id, priority, expiry]),
+                           [], [topic, uuid, priority, expiry]),
     Token = plist(token, Map, bin_prop(token, Session)),
     Nf = Token ++ OptProps ++ [{json, JSON}],
     {Nf, ?name(Session)}.
@@ -667,7 +669,7 @@ send_funs(async, api)     -> {fun sc_push_svc_apnsv3:async_send/2,
 check_sync_resp({ok, ParsedResp}, ExpStatus) ->
     ct:pal("Sent sync notification, resp = ~p", [ParsedResp]),
     check_parsed_resp(ParsedResp, ExpStatus),
-    UUID = value(id, ParsedResp),
+    UUID = value(uuid, ParsedResp),
     true = is_uuid(UUID);
 check_sync_resp(Resp, ExpStatus) ->
     ct:pal("Sent sync notification, error resp = ~p", [Resp]),
@@ -682,7 +684,7 @@ check_async_resp({ok, {Action, UUID}}, ExpStatus) ->
         {ok, ParsedResp} ->
             ct:pal("Received async response ~p", [ParsedResp]),
             check_parsed_resp(ParsedResp, ExpStatus),
-            UUID = value(id, ParsedResp),
+            UUID = value(uuid, ParsedResp),
             true = is_uuid(UUID);
         Error ->
             ct:pal("Received async error result ~p", [Error]),
@@ -708,4 +710,12 @@ sim_nf_fun(#{} = Map, #{reason := Reason} = SimMap) ->
                          extra => [{sim_cfg, SimCfg}]},
             make_nf(Session, NfMap)
     end.
+
+%%--------------------------------------------------------------------
+uuid_to_str(<<_:128>> = UUID) ->
+    uuid:uuid_to_string(UUID, binary_standard).
+
+%%--------------------------------------------------------------------
+str_to_uuid(UUID) ->
+    uuid:string_to_uuid(UUID).
 

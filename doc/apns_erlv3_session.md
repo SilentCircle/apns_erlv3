@@ -359,7 +359,7 @@ send_callback() = fun((list(), <a href="#type-cb_req">cb_req()</a>, <a href="#ty
 
 
 <pre><code>
-send_opt() = {token, <a href="#type-bstrtok">bstrtok()</a>} | {topic, binary()} | {id, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-uuid_str">apns_lib_http2:uuid_str()</a>} | {priority, integer()} | {expiry, integer()} | {json, binary()}
+send_opt() = {token, <a href="#type-bstrtok">bstrtok()</a>} | {topic, binary()} | {uuid, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-uuid_str">apns_lib_http2:uuid_str()</a>} | {priority, integer()} | {expiry, integer()} | {json, binary()}
 </code></pre>
 
 
@@ -592,7 +592,7 @@ more detail.</dd>
 #### <a name="Notification_Property_List">Notification Property List</a> ####
 
 ```
-   [{id, binary()()},              % UUID string
+   [{uuid, binary()()},            % UUID string
     {expiration, non_neg_integer()},
     {token, binary()},             % Hex string
     {topic, binary()},             % String
@@ -631,7 +631,7 @@ See `apns_lib_http2:parsed_rsp()`.
 
 ```
   [
-   {id, binary()},              % UUID string
+   {uuid, binary()},           % UUID string
    {status, binary()},          % HTTP/2 status string, e.g. <<"200">>.
    {status_desc, binary()},     % Status description string
    {reason, binary()},          % Reason string
@@ -646,7 +646,7 @@ See `apns_lib_http2:parsed_rsp()`.
 
 ```
   [
-   {id,
+   {uuid,
     <<"d013d454-b1d0-469a-96d3-52e0c5ec4281">>},
    {status,<<"200">>},
    {status_desc,<<"Success">>}
@@ -657,7 +657,7 @@ See `apns_lib_http2:parsed_rsp()`.
 
 ```
   [
-   {id,<<"519d99ac-1bb0-42df-8381-e6979ce7cd32">>},
+   {uuid,<<"519d99ac-1bb0-42df-8381-e6979ce7cd32">>},
    {status,<<"400">>},
    {status_desc,<<"Bad request">>},
    {reason,<<"BadDeviceToken">>},
@@ -670,7 +670,7 @@ See `apns_lib_http2:parsed_rsp()`.
 
 ```
   [
-   {id,<<"7824c0f2-a5e6-4c76-9699-45ac477e64d2">>},
+   {uuid,<<"7824c0f2-a5e6-4c76-9699-45ac477e64d2">>},
    {status,<<"410">>},
    {status_desc,<<"The device token is no longer active for the topic.">>},
    {reason,<<"Unregistered">>},

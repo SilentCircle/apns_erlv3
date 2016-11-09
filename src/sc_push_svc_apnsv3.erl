@@ -294,8 +294,8 @@ async_send(Name, Notification) when is_list(Notification) ->
 %% example_callback(NfPL, Req, Resp) ->
 %%     case proplists:get_value(from, NfPL) of
 %%         Caller when is_pid(Caller) ->
-%%             UUID = proplists:get_value(id, NfPL),
-%%             Caller ! {user_defined_cb, #{id => UUID,
+%%             UUID = proplists:get_value(uuid, NfPL),
+%%             Caller ! {user_defined_cb, #{uuid => UUID,
 %%                                          nf => NfPL,
 %%                                          req => Req,
 %%                                          resp => Resp}},
@@ -308,7 +308,7 @@ async_send(Name, Notification) when is_list(Notification) ->
 %% === Example parameters to callback function ===
 %%
 %% ```
-%% NfPL = [{id,<<"44e83e09-bfb6-4f67-a281-f437a7450c1a">>},
+%% NfPL = [{uuid,<<"44e83e09-bfb6-4f67-a281-f437a7450c1a">>},
 %%         {expiration,2147483647},
 %%         {token,<<"de891ab30fc96af54406b22cfcb2a7da09628c62236e374f044bd49879bd8e5a">>},
 %%         {topic,<<"com.example.FakeApp.voip">>},
@@ -325,7 +325,7 @@ async_send(Name, Notification) when is_list(Notification) ->
 %%        ], <<"{\"aps\":{\"alert\":\"Hello, async user callback\"}}">>
 %%       }.
 %%
-%% Resp = {ok,[{id,<<"44e83e09-bfb6-4f67-a281-f437a7450c1a">>},
+%% Resp = {ok,[{uuid,<<"44e83e09-bfb6-4f67-a281-f437a7450c1a">>},
 %%             {status,<<"200">>},
 %%             {status_desc,<<"Success">>}]}.
 %% '''

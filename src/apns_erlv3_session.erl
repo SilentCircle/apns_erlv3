@@ -296,7 +296,7 @@
 
 -type send_opt() :: {token, bstrtok()}
                   | {topic, binary()}
-                  | {id, apns_lib_http2:uuid_str()}
+                  | {uuid, apns_lib_http2:uuid_str()}
                   | {priority, integer()}
                   | {expiry, integer()}
                   | {json, binary()}
@@ -351,7 +351,7 @@
 
 %% Notification
 -record(nf,
-        {id             = <<>>                   :: undefined | apns_lib_http2:uuid_str(),
+        {uuid           = <<>>                   :: undefined | apns_lib_http2:uuid_str(),
          expiry         = 0                      :: non_neg_integer(),
          token          = <<>>                   :: binary(),
          topic          = <<>>                   :: undefined | binary(), % APNS topic/app id suffix
@@ -525,7 +525,7 @@ async_send(FsmRef, ReplyPid, Opts) when is_pid(ReplyPid), is_list(Opts) ->
 %% === Notification Property List ===
 %%
 %% ```
-%%  [{id, binary()()},              % UUID string
+%%  [{uuid, binary()()},            % UUID string
 %%   {expiration, non_neg_integer()},
 %%   {token, binary()},             % Hex string
 %%   {topic, binary()},             % String
@@ -562,7 +562,7 @@ async_send(FsmRef, ReplyPid, Opts) when is_pid(ReplyPid), is_list(Opts) ->
 %%
 %% ```
 %% [
-%%  {id, binary()},              % UUID string
+%%  {uuid, binary()},           % UUID string
 %%  {status, binary()},          % HTTP/2 status string, e.g. <<"200">>.
 %%  {status_desc, binary()},     % Status description string
 %%  {reason, binary()},          % Reason string
@@ -577,7 +577,7 @@ async_send(FsmRef, ReplyPid, Opts) when is_pid(ReplyPid), is_list(Opts) ->
 %%
 %% ```
 %% [
-%%  {id,
+%%  {uuid,
 %%   <<"d013d454-b1d0-469a-96d3-52e0c5ec4281">>},
 %%  {status,<<"200">>},
 %%  {status_desc,<<"Success">>}
@@ -588,7 +588,7 @@ async_send(FsmRef, ReplyPid, Opts) when is_pid(ReplyPid), is_list(Opts) ->
 %%
 %% ```
 %% [
-%%  {id,<<"519d99ac-1bb0-42df-8381-e6979ce7cd32">>},
+%%  {uuid,<<"519d99ac-1bb0-42df-8381-e6979ce7cd32">>},
 %%  {status,<<"400">>},
 %%  {status_desc,<<"Bad request">>},
 %%  {reason,<<"BadDeviceToken">>},
@@ -601,7 +601,7 @@ async_send(FsmRef, ReplyPid, Opts) when is_pid(ReplyPid), is_list(Opts) ->
 %%
 %% ```
 %% [
-%%  {id,<<"7824c0f2-a5e6-4c76-9699-45ac477e64d2">>},
+%%  {uuid,<<"7824c0f2-a5e6-4c76-9699-45ac477e64d2">>},
 %%  {status,<<"410">>},
 %%  {status_desc,<<"The device token is no longer active for the topic.">>},
 %%  {reason,<<"Unregistered">>},
@@ -904,7 +904,7 @@ connecting({send, sync, #nf{} = Nf}, From, State) ->
     continue(connecting,
              queue_nf(update_nf(Nf, State, From), State));
 connecting({send, async, #nf{} = Nf}, From, State) ->
-    reply({ok, {queued, Nf#nf.id}}, connecting,
+    reply({ok, {queued, Nf#nf.uuid}}, connecting,
           queue_nf(update_nf(Nf, State, From), State));
 connecting(Event, From, State) ->
     handle_sync_event(Event, From, connecting, State).
@@ -962,7 +962,7 @@ disconnecting({send, _Mode, _ = #nf{}}, _From, #?S{quiesced = true} = State) ->
 disconnecting({send, sync, #nf{} = Nf}, From, State) ->
     continue(disconnecting, queue_nf(update_nf(Nf, State, From), State));
 disconnecting({send, async, #nf{} = Nf}, From, State) ->
-    reply({ok, {queued, Nf#nf.id}}, disconnecting,
+    reply({ok, {queued, Nf#nf.uuid}}, disconnecting,
           queue_nf(update_nf(Nf, State, From), State));
 disconnecting(Event, From, State) ->
     handle_sync_event(Event, From, disconnecting, State).
@@ -987,7 +987,7 @@ flush_queued_notifications(#?S{queue = Queue} = State) ->
             end;
         {{value, #nf{} = Nf}, NewQueue} ->
             ?LOG_DEBUG("Notification ~s with token ~s expired",
-                       [Nf#nf.id, tok_s(Nf)]),
+                       [Nf#nf.uuid, tok_s(Nf)]),
             notify_failure(Nf, expired),
             flush_queued_notifications(State#?S{queue = NewQueue})
     end.
@@ -1001,7 +1001,7 @@ flush_queued_notifications(#?S{queue = Queue} = State) ->
                 {error, {UUID, ParsedResponse}, NewState},
       UUID :: apns_lib_http2:uuid_str(), NewState :: state(),
       Reason :: term(), ParsedResponse :: apns_lib_http2:parsed_rsp().
-send_notification(#nf{id = UUID} = Nf, Mode, State) ->
+send_notification(#nf{uuid = UUID} = Nf, Mode, State) ->
     ?LOG_DEBUG("Sending ~p notification: ~p", [Mode, Nf]),
     case apns_send(Nf, State) of
         {ok, StreamId} ->
@@ -1444,7 +1444,7 @@ key_not_found_error(Key) ->
 make_nf(Opts, From, Callback) when (From =:= undefined orelse
                                     is_pid(From)) andalso
                                    is_function(Callback, 3) ->
-    #nf{id = get_id_opt(Opts),
+    #nf{uuid = get_id_opt(Opts),
         expiry = get_expiry_opt(Opts),
         token = get_token_opt(Opts),
         topic = pv(topic, Opts),
@@ -1467,7 +1467,7 @@ update_nf(#nf{topic = Topic, from = NfFrom} = Nf, State, From) ->
 notify_failure(#nf{from = undefined}, _Reason) -> ok;
 notify_failure(#nf{from = {Pid, _} = Caller}, Reason) when is_pid(Pid) ->
     gen_fsm:reply(Caller, {error, Reason});
-notify_failure(#nf{id = UUID, from = Pid}, Reason) when is_pid(Pid) ->
+notify_failure(#nf{uuid = UUID, from = Pid}, Reason) when is_pid(Pid) ->
     Pid ! {apns_response, v3, {UUID, {error, Reason}}}.
 
 %%% --------------------------------------------------------------------------
@@ -1587,7 +1587,7 @@ gen_send_callback(ReplyFun, NfPL, Req, Resp) when is_function(ReplyFun, 3) ->
             ?LOG_ERROR("Cannot send result, no caller info: ~p", [NfPL]),
             {error, no_caller_info};
         Caller  ->
-            UUID = pv_req(id, NfPL),
+            UUID = pv_req(uuid, NfPL),
             ?LOG_DEBUG("Invoke callback for UUID ~s, caller ~p", [UUID, Caller]),
             ReplyFun(Caller, UUID, Resp),
             ok
@@ -1623,7 +1623,7 @@ async_reply(Pid, UUID, Resp) when is_pid(Pid) ->
 %% @private
 nf_to_opts(#nf{} = Nf) ->
     KVs = [
-     {id, Nf#nf.id},
+     {uuid, Nf#nf.uuid},
      %% NB: APNS and apns_lib_http2 use the keyword `expiration', so
      %% this translation is necessary.
      {expiration, Nf#nf.expiry},
@@ -1635,7 +1635,7 @@ nf_to_opts(#nf{} = Nf) ->
 %%--------------------------------------------------------------------
 %% @private
 nf_to_pl(#nf{} = Nf) ->
-    [{id, Nf#nf.id},
+    [{uuid, Nf#nf.uuid},
      {expiration, Nf#nf.expiry},
      {token, Nf#nf.token},
      {topic, Nf#nf.topic},
@@ -1646,7 +1646,7 @@ nf_to_pl(#nf{} = Nf) ->
 %%--------------------------------------------------------------------
 %% @private
 check_uuid(UUID, Resp) ->
-    case pv_req(id, Resp) of
+    case pv_req(uuid, Resp) of
         UUID ->
             ok;
         ActualUUID ->
@@ -1732,11 +1732,11 @@ get_default_topic(Opts) ->
 %% the async interface once it is validated and queued.
 %% @private
 get_id_opt(Opts) ->
-    case pv(id, Opts) of
+    case pv(uuid, Opts) of
         undefined ->
             apns_lib_http2:make_uuid();
         Id ->
-            validate_binary({id, Id})
+            validate_binary({uuid, Id})
     end.
 
 %%--------------------------------------------------------------------
@@ -1824,7 +1824,7 @@ handle_parsed_resp(ParsedResp, #apns_erlv3_req{} = Req, State) ->
         ok ->
             State;
         error ->
-            UUID = pv_req(id, ParsedResp),
+            UUID = pv_req(uuid, ParsedResp),
             Nf = req_nf(Req),
             ?LOG_WARNING("APNS HTTP/2 session ~p failed to send "
                          "notification ~s with token ~s: ~p",

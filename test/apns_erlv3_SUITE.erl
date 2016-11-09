@@ -1,7 +1,6 @@
 %%%----------------------------------------------------------------
 %%% Purpose: Test suite for the 'apns_erlv3' module.
 %%%-----------------------------------------------------------------
-
 -module(apns_erlv3_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
@@ -534,7 +533,7 @@ bad_nf_backend(Config) ->
                 Name = ?name(Session),
                 UUID = gen_uuid(),
                 Nf = [
-                      {id, UUID},
+                      {uuid, UUID},
                       {alert, <<"Should be bad topic">>},
                       {token, sc_util:to_bin(rand_push_tok())},
                       {topic, <<"Some BS Topic">>}
@@ -621,7 +620,7 @@ async_session_send_user_callback(Config) ->
                               {'content-available', 1}
                              ]}],
                 Nf = [
-                      {id, UUID},
+                      {uuid, UUID},
                       {token, sc_util:to_bin(rand_push_tok())},
                       {topic, <<"com.example.FakeApp.voip">>},
                       {json, jsx:encode(APS)}
@@ -646,7 +645,7 @@ async_api_send_user_callback(Config) ->
                 Name = ?name(Session),
                 UUID = gen_uuid(),
                 Nf = [{alert, <<"Testing async api user callback">>},
-                      {id, UUID},
+                      {uuid, UUID},
                       {token, sc_util:to_bin(rand_push_tok())},
                       {topic, <<"com.example.FakeApp.voip">>}
                      ],
@@ -707,10 +706,10 @@ async_user_callback_fun() ->
     fun(NfPL, Req, Resp) ->
             case value(from, NfPL) of
                 Caller when is_pid(Caller) ->
-                    UUID = value(id, NfPL),
+                    UUID = value(uuid, NfPL),
                     ct:pal("Invoke callback for UUID ~s, caller ~p",
                            [UUID, Caller]),
-                    Caller ! {user_defined_cb, #{id => UUID,
+                    Caller ! {user_defined_cb, #{uuid => UUID,
                                                  nf => NfPL,
                                                  req => Req,
                                                  resp => Resp}},
@@ -724,7 +723,7 @@ async_user_callback_fun() ->
 %%--------------------------------------------------------------------
 async_receive_user_cb(UUID) ->
     receive
-        {user_defined_cb, #{id := UUID, resp := Resp}=Map} ->
+        {user_defined_cb, #{uuid := UUID, resp := Resp}=Map} ->
             ct:pal("Got async apns v3 response, result map: ~p",
                    [Map]),
             {ok, ParsedResponse} = Resp,
