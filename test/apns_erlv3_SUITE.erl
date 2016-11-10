@@ -479,7 +479,7 @@ send_expired_msg_while_reconnecting(Config) ->
 %% Group: unhappy_path
 %%--------------------------------------------------------------------
 
-bad_token(doc) -> ["sync send should handle BadDeviceToken properly"];
+bad_token(doc) -> ["send should handle BadDeviceToken properly"];
 bad_token(Config) when is_list(Config)  ->
     NfFun = sim_nf_fun(#{token => <<"foobar">>},
                        #{reason => <<"BadDeviceToken">>}),
@@ -488,7 +488,7 @@ bad_token(Config) when is_list(Config)  ->
 
 %%--------------------------------------------------------------------
 
-unregistered_token(doc) -> ["sync send should handle Unregistered properly"];
+unregistered_token(doc) -> ["send should handle Unregistered properly"];
 unregistered_token(Config) when is_list(Config)  ->
     SC = <<"410">>,
     NfFun = sim_nf_fun(#{}, #{reason => <<"Unregistered">>,
