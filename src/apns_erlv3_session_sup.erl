@@ -31,6 +31,7 @@
 -export([init/1]).
 
 -include_lib("lager/include/lager.hrl").
+-include("apns_erlv3_internal.hrl").
 
 -define(SERVER, ?MODULE).
 
@@ -47,7 +48,7 @@
 %%         {config, [
 %%             {host, "api.push.apple.com" | "api.development.push.apple.com"},
 %%             {port, 443 | 2197},
-%%             {bundle_seed_id, <<"com.example.MyApp">>},
+%%             {app_id_suffix, <<"com.example.MyApp">>},
 %%             {apns_env, prod},
 %%             {apns_topic, <<"com.example.MyApp">>},
 %%             {retry_delay, 1000},
@@ -120,9 +121,15 @@ init([]) ->
 %%--------------------------------------------------------------------
 %% Internal Functions
 %%--------------------------------------------------------------------
+%% @private
 start_child(Opts) ->
-    lager:info("Starting APNSv3 (HTTP/2) session with opts: ~p", [Opts]),
-    Name = sc_util:req_val(name, Opts),
-    SessCfg = sc_util:req_val(config, Opts),
-    start_child(Name, SessCfg).
-
+    try
+        Name = sc_util:req_val(name, Opts),
+        ?LOG_INFO("Starting APNSv3 (HTTP/2) session ~p", [Name]),
+        SessCfg = sc_util:req_val(config, Opts),
+        start_child(Name, SessCfg)
+    catch
+        Class:Reason ->
+            ?LOG_CRITICAL("Failed to start APNSv3 (HTTP/2) session\n"
+                          "Stacktrace:~s", [?STACKTRACE(Class, Reason)])
+    end.

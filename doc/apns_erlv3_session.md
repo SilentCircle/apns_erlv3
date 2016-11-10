@@ -289,7 +289,7 @@ cb_req() = <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/defau
 
 
 <pre><code>
-cb_result() = {ok, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-parsed_rsp">apns_lib_http2:parsed_rsp()</a>} | {error, term()}
+cb_result() = {ok, {<a href="#type-uuid">uuid()</a>, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-parsed_rsp">apns_lib_http2:parsed_rsp()</a>}} | {error, term()}
 </code></pre>
 
 
@@ -329,7 +329,7 @@ options() = [<a href="#type-option">option()</a>]
 
 
 <pre><code>
-queued_result() = {queued, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-uuid_str">apns_lib_http2:uuid_str()</a>}
+queued_result() = {queued, <a href="#type-uuid">uuid()</a>}
 </code></pre>
 
 
@@ -339,7 +339,7 @@ queued_result() = {queued, <a href="/home/efine/work/sc/open_source/scpf/apns_er
 
 
 <pre><code>
-reply_fun() = fun((<a href="#type-caller">caller()</a>, <a href="#type-uuid_str">uuid_str()</a>, <a href="#type-cb_result">cb_result()</a>) -&gt; none())
+reply_fun() = fun((<a href="#type-caller">caller()</a>, <a href="#type-uuid">uuid()</a>, <a href="#type-cb_result">cb_result()</a>) -&gt; none())
 </code></pre>
 
 
@@ -359,7 +359,7 @@ send_callback() = fun((list(), <a href="#type-cb_req">cb_req()</a>, <a href="#ty
 
 
 <pre><code>
-send_opt() = {token, <a href="#type-bstrtok">bstrtok()</a>} | {topic, binary()} | {uuid, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-uuid_str">apns_lib_http2:uuid_str()</a>} | {priority, integer()} | {expiry, integer()} | {json, binary()}
+send_opt() = {token, <a href="#type-bstrtok">bstrtok()</a>} | {topic, binary()} | {uuid, <a href="#type-uuid_str">uuid_str()</a>} | {priority, integer()} | {expiry, integer()} | {json, binary()}
 </code></pre>
 
 
@@ -379,7 +379,7 @@ send_opts() = [<a href="#type-send_opt">send_opt()</a>]
 
 
 <pre><code>
-submitted_result() = {submitted, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-uuid_str">apns_lib_http2:uuid_str()</a>}
+submitted_result() = {submitted, <a href="#type-uuid">uuid()</a>}
 </code></pre>
 
 
@@ -389,7 +389,7 @@ submitted_result() = {submitted, <a href="/home/efine/work/sc/open_source/scpf/a
 
 
 <pre><code>
-sync_result() = {result, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-parsed_rsp">apns_lib_http2:parsed_rsp()</a>}
+sync_result() = {<a href="#type-uuid">uuid()</a>, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-parsed_rsp">apns_lib_http2:parsed_rsp()</a>}
 </code></pre>
 
 
@@ -412,6 +412,17 @@ sync_send_reply() = {ok, <a href="#type-sync_send_result">sync_send_result()</a>
 sync_send_result() = <a href="#type-sync_result">sync_result()</a>
 </code></pre>
 
+
+
+
+### <a name="type-uuid">uuid()</a> ###
+
+
+<pre><code>
+uuid() = binary()
+</code></pre>
+
+128-bit raw UUID
 
 
 
@@ -449,7 +460,7 @@ async_send(FsmRef, Opts) -&gt; Result
 Asynchronously send notification in `Opts`.
 If `id` is not provided in `Opts`, generate a UUID.  When a response is
 received from APNS, send it to the caller's process as a message in the
-format `{apns_response, v3, {UUID, Resp :: cb_result()}}`.
+format `{apns_response, v3, {uuid(), Resp :: cb_result()}}`.
 
 <a name="async_send-3"></a>
 
@@ -464,7 +475,7 @@ async_send(FsmRef, ReplyPid, Opts) -&gt; Result
 Asynchronously send notification in `Opts`.
 If `id` is not provided in `Opts`, generate a UUID.  When a response is
 received from APNS, send it to the caller's process as a message in the
-format `{apns_response, v3, {UUID, Resp :: cb_result()}}`.
+format `{apns_response, v3, {uuid(), Resp :: cb_result()}}`.
 
 __See also:__ [async_send/1](#async_send-1).
 
@@ -565,7 +576,7 @@ to indicate callback failure instead.
 
 
 
-<dt><code>Resp :: {ok, ParsedRsp} | {error, any()}</code></dt>
+<dt><code>Resp :: {ok, {uuid(), ParsedRsp}} | {error, any()}</code></dt>
 
 
 
@@ -592,7 +603,7 @@ more detail.</dd>
 #### <a name="Notification_Property_List">Notification Property List</a> ####
 
 ```
-   [{uuid, binary()()},            % UUID string
+   [{uuid, binary()},              % Canonical UUID string
     {expiration, non_neg_integer()},
     {token, binary()},             % Hex string
     {topic, binary()},             % String
@@ -618,7 +629,7 @@ more detail.</dd>
 
 The properties present in the list depend on the status code.
 
-* __Always present__: `id`, `status`, `status_desc`.
+* __Always present__: `uuid`, `status`, `status_desc`.
 
 * __Also present for 4xx, 5xx status__: `reason`, `reason_desc`,
 `body`.
@@ -631,7 +642,7 @@ See `apns_lib_http2:parsed_rsp()`.
 
 ```
   [
-   {uuid, binary()},           % UUID string
+   {uuid, binary()},            % UUID string
    {status, binary()},          % HTTP/2 status string, e.g. <<"200">>.
    {status_desc, binary()},     % Status description string
    {reason, binary()},          % Reason string

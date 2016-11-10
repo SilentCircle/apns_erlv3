@@ -24,13 +24,19 @@
                  end
          end)(Filename))).
 
--define(LOG_GENERAL(Level, Fmt, Args),
-        lager:Level("~p: " ++ Fmt, [?MODULE] ++ Args)).
+-define(LOG_GENERAL(Level, Fmt, Args), lager:Level(Fmt, Args)).
 
--define(LOG_INFO(Fmt, Args), ?LOG_GENERAL(info, Fmt, Args)).
--define(LOG_DEBUG(Fmt, Args), ?LOG_GENERAL(debug, Fmt, Args)).
--define(LOG_ERROR(Fmt, Args), ?LOG_GENERAL(error, Fmt, Args)).
--define(LOG_WARNING(Fmt, Args), ?LOG_GENERAL(warning, Fmt, Args)).
+-define(LOG_DEBUG(Fmt, Args),     ?LOG_GENERAL(debug, Fmt, Args)).
+-define(LOG_INFO(Fmt, Args),      ?LOG_GENERAL(info, Fmt, Args)).
+-define(LOG_NOTICE(Fmt, Args),    ?LOG_GENERAL(notice, Fmt, Args)).
+-define(LOG_WARNING(Fmt, Args),   ?LOG_GENERAL(warning, Fmt, Args)).
+-define(LOG_ERROR(Fmt, Args),     ?LOG_GENERAL(error, Fmt, Args)).
+-define(LOG_CRITICAL(Fmt, Args),  ?LOG_GENERAL(critical, Fmt, Args)).
+-define(LOG_ALERT(Fmt, Args),     ?LOG_GENERAL(alert, Fmt, Args)).
+-define(LOG_EMERGENCY(Fmt, Args), ?LOG_GENERAL(emergency, Fmt, Args)).
+
+-define(STACKTRACE(Class, Reason),
+        lager:pr_stacktrace(erlang:get_stacktrace(), {Class, Reason})).
 
 -ifdef(namespaced_queues).
 -type sc_queue() :: queue:queue().
