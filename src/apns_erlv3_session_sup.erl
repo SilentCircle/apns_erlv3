@@ -47,7 +47,7 @@
 %%         {config, [
 %%             {host, "api.push.apple.com" | "api.development.push.apple.com"},
 %%             {port, 443 | 2197},
-%%             {bundle_seed_id, <<"com.example.MyApp">>},
+%%             {app_id_suffix, <<"com.example.MyApp">>},
 %%             {apns_env, prod},
 %%             {apns_topic, <<"com.example.MyApp">>},
 %%             {retry_delay, 1000},

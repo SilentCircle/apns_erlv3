@@ -272,11 +272,13 @@
 -type state_name() :: connecting | connected | disconnecting.
 
 -type cb_req() :: apns_lib_http2:http2_req().
--type cb_result() :: {ok, apns_lib_http2:parsed_rsp()} | {error, term()}.
+-type cb_result() :: {ok, {uuid(), apns_lib_http2:parsed_rsp()}}
+                   | {error, term()}.
 -type send_callback() :: fun((list(), cb_req(), cb_result()) -> term()).
 -type caller() :: pid() | {pid(), term()}.
+-type uuid() :: binary(). % 128-bit raw UUID
 -type uuid_str() :: apns_lib_http2:uuid_str().
--type reply_fun() :: fun((caller(), uuid_str(), cb_result()) -> none()).
+-type reply_fun() :: fun((caller(), uuid(), cb_result()) -> none()).
 
 -type option() :: {host, binary()} |
                   {port, non_neg_integer()} |
@@ -296,7 +298,7 @@
 
 -type send_opt() :: {token, bstrtok()}
                   | {topic, binary()}
-                  | {uuid, apns_lib_http2:uuid_str()}
+                  | {uuid, uuid_str()}
                   | {priority, integer()}
                   | {expiry, integer()}
                   | {json, binary()}
@@ -306,16 +308,16 @@
 
 %% This result is returned when the notification is queued because
 %% the session was temporarily in a disconnected state.
--type queued_result() :: {queued, apns_lib_http2:uuid_str()}.
+-type queued_result() :: {queued, uuid()}.
 
 %% This result is returned immediately when the notification was submitted
 %% asynchronously. The APNS response will be sent to the caller's process
 %% as a message in the following format:
-%% `{apns_response, v3, {UUID, Resp :: cb_result()}}'
--type submitted_result() :: {submitted, apns_lib_http2:uuid_str()}.
+%% `{apns_response, v3, {uuid(), Resp :: cb_result()}}'
+-type submitted_result() :: {submitted, uuid()}.
 
 %% This result is returned from a synchronous send.
--type sync_result() :: {result, apns_lib_http2:parsed_rsp()}.
+-type sync_result() :: {uuid(), apns_lib_http2:parsed_rsp()}.
 
 -type async_send_result() :: queued_result() | submitted_result().
 -type sync_send_result() :: sync_result().
@@ -351,7 +353,7 @@
 
 %% Notification
 -record(nf,
-        {uuid           = <<>>                   :: undefined | apns_lib_http2:uuid_str(),
+        {uuid           = <<>>                   :: undefined | uuid_str(),
          expiry         = 0                      :: non_neg_integer(),
          token          = <<>>                   :: binary(),
          topic          = <<>>                   :: undefined | binary(), % APNS topic/app id suffix
@@ -428,7 +430,7 @@ stop(FsmRef) ->
 %% @doc Asynchronously send notification in `Opts'.
 %% If `id' is not provided in `Opts', generate a UUID.  When a response is
 %% received from APNS, send it to the caller's process as a message in the
-%% format `{apns_response, v3, {UUID, Resp :: cb_result()}}'.
+%% format `{apns_response, v3, {uuid(), Resp :: cb_result()}}'.
 %% @end
 %%--------------------------------------------------------------------
 -spec async_send(FsmRef, Opts) -> Result when
@@ -441,7 +443,7 @@ async_send(FsmRef, Opts) when is_list(Opts) ->
 %% @doc Asynchronously send notification in `Opts'.
 %% If `id' is not provided in `Opts', generate a UUID.  When a response is
 %% received from APNS, send it to the caller's process as a message in the
-%% format `{apns_response, v3, {UUID, Resp :: cb_result()}}'.
+%% format `{apns_response, v3, {uuid(), Resp :: cb_result()}}'.
 %% @see async_send/1
 %% @end
 %%--------------------------------------------------------------------
@@ -504,7 +506,7 @@ async_send(FsmRef, ReplyPid, Opts) when is_pid(ReplyPid), is_list(Opts) ->
 %%     <dd>The notification data as a proplist. See below for a description.</dd>
 %%   <dt>`Req :: {Headers :: [{binary(), binary()}], Body :: binary()}'</dt>
 %%     <dd>The original request headers and data</dd>
-%%   <dt>`Resp :: {ok, ParsedRsp} | {error, any()}'</dt>
+%%   <dt>`Resp :: {ok, {uuid(), ParsedRsp}} | {error, any()}'</dt>
 %%     <dd>The APNS response.  See "Parsed Response Property List" below for
 %%     more detail.</dd>
 %% </dl>
@@ -525,7 +527,7 @@ async_send(FsmRef, ReplyPid, Opts) when is_pid(ReplyPid), is_list(Opts) ->
 %% === Notification Property List ===
 %%
 %% ```
-%%  [{uuid, binary()()},            % UUID string
+%%  [{uuid, binary()},              % Canonical UUID string
 %%   {expiration, non_neg_integer()},
 %%   {token, binary()},             % Hex string
 %%   {topic, binary()},             % String
@@ -551,7 +553,7 @@ async_send(FsmRef, ReplyPid, Opts) when is_pid(ReplyPid), is_list(Opts) ->
 %% The properties present in the list depend on the status code.
 %%
 %% <ul>
-%%  <li><b>Always present</b>: `id', `status', `status_desc'.</li>
+%%  <li><b>Always present</b>: `uuid', `status', `status_desc'.</li>
 %%  <li><b>Also present for 4xx, 5xx status</b>: `reason', `reason_desc',
 %%  `body'.</li>
 %%  <li><b>Also present, but only for 410 status</b>: `timestamp',
@@ -562,7 +564,7 @@ async_send(FsmRef, ReplyPid, Opts) when is_pid(ReplyPid), is_list(Opts) ->
 %%
 %% ```
 %% [
-%%  {uuid, binary()},           % UUID string
+%%  {uuid, binary()},            % UUID string
 %%  {status, binary()},          % HTTP/2 status string, e.g. <<"200">>.
 %%  {status_desc, binary()},     % Status description string
 %%  {reason, binary()},          % Reason string
@@ -904,7 +906,7 @@ connecting({send, sync, #nf{} = Nf}, From, State) ->
     continue(connecting,
              queue_nf(update_nf(Nf, State, From), State));
 connecting({send, async, #nf{} = Nf}, From, State) ->
-    reply({ok, {queued, Nf#nf.uuid}}, connecting,
+    reply({ok, {queued, str_to_uuid(Nf#nf.uuid)}}, connecting,
           queue_nf(update_nf(Nf, State, From), State));
 connecting(Event, From, State) ->
     handle_sync_event(Event, From, connecting, State).
@@ -962,7 +964,7 @@ disconnecting({send, _Mode, _ = #nf{}}, _From, #?S{quiesced = true} = State) ->
 disconnecting({send, sync, #nf{} = Nf}, From, State) ->
     continue(disconnecting, queue_nf(update_nf(Nf, State, From), State));
 disconnecting({send, async, #nf{} = Nf}, From, State) ->
-    reply({ok, {queued, Nf#nf.uuid}}, disconnecting,
+    reply({ok, {queued, str_to_uuid(Nf#nf.uuid)}}, disconnecting,
           queue_nf(update_nf(Nf, State, From), State));
 disconnecting(Event, From, State) ->
     handle_sync_event(Event, From, disconnecting, State).
@@ -999,24 +1001,25 @@ flush_queued_notifications(#?S{queue = Queue} = State) ->
       Result :: {ok, {submitted, UUID}, NewState} |
                 {error, {UUID, {badmatch, Reason}}, NewState} |
                 {error, {UUID, ParsedResponse}, NewState},
-      UUID :: apns_lib_http2:uuid_str(), NewState :: state(),
+      UUID :: uuid(), NewState :: state(),
       Reason :: term(), ParsedResponse :: apns_lib_http2:parsed_rsp().
-send_notification(#nf{uuid = UUID} = Nf, Mode, State) ->
+send_notification(#nf{uuid = UUIDStr} = Nf, Mode, State) ->
     ?LOG_DEBUG("Sending ~p notification: ~p", [Mode, Nf]),
+    UUID = str_to_uuid(UUIDStr),
     case apns_send(Nf, State) of
         {ok, StreamId} ->
             ?LOG_DEBUG("Submitted ~p notification ~s on stream ~p",
-                       [Mode, UUID, StreamId]),
+                       [Mode, UUIDStr, StreamId]),
             {ok, {submitted, UUID}, State};
         {error, {{badmatch, _} = Reason, _}} ->
             ?LOG_ERROR("APNS HTTP/2 session ~p crashed "
                        "on notification ~w with token ~s: ~p",
-                       [State#?S.name, UUID, tok_s(Nf), Reason]),
+                       [State#?S.name, UUIDStr, tok_s(Nf), Reason]),
             {error, {UUID, Reason}, recover_notification(Nf, State)};
         {error, ParsedResponse} ->
             ?LOG_WARNING("APNS HTTP/2 session ~p failed to send "
                          "notification ~s with token ~s: ~p",
-                         [State#?S.name, UUID, tok_s(Nf), ParsedResponse]),
+                         [State#?S.name, UUIDStr, tok_s(Nf), ParsedResponse]),
             {error, {UUID, ParsedResponse},
              maybe_recover_notification(ParsedResponse, Nf, State)}
     end.
@@ -1467,8 +1470,8 @@ update_nf(#nf{topic = Topic, from = NfFrom} = Nf, State, From) ->
 notify_failure(#nf{from = undefined}, _Reason) -> ok;
 notify_failure(#nf{from = {Pid, _} = Caller}, Reason) when is_pid(Pid) ->
     gen_fsm:reply(Caller, {error, Reason});
-notify_failure(#nf{uuid = UUID, from = Pid}, Reason) when is_pid(Pid) ->
-    Pid ! {apns_response, v3, {UUID, {error, Reason}}}.
+notify_failure(#nf{uuid = UUIDStr, from = Pid}, Reason) when is_pid(Pid) ->
+    Pid ! make_apns_response(UUIDStr, {error, Reason}).
 
 %%% --------------------------------------------------------------------------
 %%% History and Queue Managment Functions
@@ -1595,10 +1598,12 @@ gen_send_callback(ReplyFun, NfPL, Req, Resp) when is_function(ReplyFun, 3) ->
 
 %%--------------------------------------------------------------------
 %% @private
-log_response({ok, [_|_] = ParsedResp}, _Req) ->
-    ?LOG_DEBUG("Received parsed response: ~p", [ParsedResp]);
-log_response({error, [_|_] = ParsedResp}, _Req) ->
-    ?LOG_DEBUG("Received error response: ~p", [ParsedResp]);
+log_response({ok, {UUID, [_|_] = ParsedResp}}, _Req) ->
+    ?LOG_DEBUG("Received parsed response (uuid ~s): ~p",
+               [uuid_to_str(UUID), ParsedResp]);
+log_response({error, {UUID, [_|_] = ParsedResp}}, _Req) ->
+    ?LOG_DEBUG("Received error response (uuid ~s): ~p",
+               [uuid_to_str(UUID), ParsedResp]);
 log_response(Resp, {ReqHdrs, ReqBody}) ->
     ?LOG_WARNING("Error sending request, error: ~p\n"
                  "headers: ~p\nbody: ~p\n", [Resp, ReqHdrs, ReqBody]).
@@ -1611,11 +1616,11 @@ sync_reply(Caller, _UUID, Resp) ->
 
 %% @private
 async_reply({Pid, _Tag} = Caller, UUID, Resp) ->
-    ?LOG_DEBUG("async_reply for UUID ~s to caller ~p", [UUID, Caller]),
-    Pid ! {apns_response, v3, {UUID, Resp}};
+    ?LOG_DEBUG("async_reply for UUID ~p to caller ~p", [UUID, Caller]),
+    Pid ! make_apns_response(UUID, Resp);
 async_reply(Pid, UUID, Resp) when is_pid(Pid) ->
-    ?LOG_DEBUG("async_reply for UUID ~s to caller ~p", [UUID, Pid]),
-    Pid ! {apns_response, v3, {UUID, Resp}}.
+    ?LOG_DEBUG("async_reply for UUID ~p to caller ~p", [UUID, Pid]),
+    Pid ! make_apns_response(UUID, Resp).
 
 %%--------------------------------------------------------------------
 %% The idea here is not to provide values that APNS will default,
@@ -1698,6 +1703,11 @@ tok_s(<<Token/binary>>) ->
 tok_s(_) ->
     <<"unknown_token">>.
 
+-compile({inline, [make_apns_response/2]}).
+make_apns_response(<<_:128>> = UUID, Resp) ->
+    {apns_response, v3, {UUID, Resp}};
+make_apns_response(UUID, Resp) ->
+    make_apns_response(str_to_uuid(UUID), Resp).
 
 %%--------------------------------------------------------------------
 -spec get_default_topic(Opts) -> Result when
@@ -1790,13 +1800,22 @@ handle_end_of_stream(StreamId, StateName, #?S{http2_pid = Pid} = State) ->
         {ok, Resp} ->
             RespResult = get_resp_result(Resp),
             Req = get_req(State#?S.req_store, StreamId),
-            _ = run_send_callback(Req, StateName, RespResult),
+            #apns_erlv3_req{nf=Nf} = Req,
+            UUID = str_to_uuid(Nf#nf.uuid),
+            _ = run_send_callback(Req, StateName,
+                                  to_cb_result(UUID, RespResult)),
             handle_resp_result(RespResult, Req, State);
         {error, Err} ->
             ?LOG_ERROR("~p: error response from stream id ~p: ~p",
                        [handle_end_of_stream, StreamId, Err]),
             State
     end.
+
+%%--------------------------------------------------------------------
+to_cb_result(UUID, {ok, [_|_]=ParsedResp}) ->
+    {ok, {UUID, ParsedResp}};
+to_cb_result(UUID, {error, Reason}) ->
+    {error, {UUID, Reason}}.
 
 %%--------------------------------------------------------------------
 -spec handle_resp_result(RespResult, Req, State) -> NewState when
@@ -1858,6 +1877,8 @@ run_send_callback(#apns_erlv3_req{} = R, StateName, RespResult) ->
     Callback = Nf#nf.cb,
     NfPL = nf_to_pl(Nf),
     try
+        ?LOG_DEBUG("run_send_callback, state: ~p~nnfpl: ~p~nreq: ~p~n"
+                   "respresult: ~p", [StateName, NfPL, Req, RespResult]),
         _ = Callback(NfPL, Req, RespResult),
         ok
     catch
@@ -1924,6 +1945,17 @@ check_status(ParsedResp) ->
         _ErrorStatus ->
             error
     end.
+
+%%--------------------------------------------------------------------
+
+-spec str_to_uuid(uuid_str()) -> uuid().
+str_to_uuid(UUID) ->
+    uuid:string_to_uuid(UUID).
+
+%%--------------------------------------------------------------------
+-spec uuid_to_str(uuid()) -> uuid_str().
+uuid_to_str(<<_:128>> = UUID) ->
+    uuid:uuid_to_string(UUID, binary_standard).
 
 %%--------------------------------------------------------------------
 

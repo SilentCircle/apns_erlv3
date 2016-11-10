@@ -299,6 +299,12 @@ start_simulator(Name, SimConfig, LagerEnv, _PrivDir) ->
     {ok, L}.
 
 %%--------------------------------------------------------------------
+-spec str_to_uuid(UUIDStr) -> UUID when
+      UUIDStr :: binary(), UUID :: binary().
+str_to_uuid(UUID) ->
+    uuid:string_to_uuid(UUID).
+
+%%--------------------------------------------------------------------
 to_bin_prop(K, V) ->
     {sc_util:to_atom(K), sc_util:to_bin(V)}.
 
@@ -544,12 +550,15 @@ gen_uuid() ->
 
 
 %%--------------------------------------------------------------------
-wait_for_response(UUID, Timeout) ->
+wait_for_response(<<_:128>> = UUID, Timeout) ->
     receive
         {apns_response, v3, {UUID, Resp}} ->
+            UUIDStr = uuid_to_str(UUID),
             ct:pal("Received async apns v3 response, uuid: ~p, resp: ~p",
-                   [UUID, Resp]),
-            Resp
+                   [UUIDStr, Resp]),
+            Resp;
+        Other ->
+            ct:fail({unexpected_response, Other})
     after Timeout ->
               {error, timeout}
     end.
@@ -666,26 +675,27 @@ send_funs(async, api)     -> {fun sc_push_svc_apnsv3:async_send/2,
                               fun check_async_resp/2}.
 
 %%--------------------------------------------------------------------
-check_sync_resp({ok, ParsedResp}, ExpStatus) ->
+check_sync_resp({ok, {<<_:128>> = UUID, ParsedResp}}, ExpStatus) ->
     ct:pal("Sent sync notification, resp = ~p", [ParsedResp]),
     check_parsed_resp(ParsedResp, ExpStatus),
-    UUID = value(uuid, ParsedResp),
-    true = is_uuid(UUID);
+    UUIDStr = value(uuid, ParsedResp),
+    true = is_uuid(UUIDStr),
+    UUID = str_to_uuid(UUIDStr);
 check_sync_resp(Resp, ExpStatus) ->
     ct:pal("Sent sync notification, error resp = ~p", [Resp]),
     check_match(Resp, ExpStatus).
 
 %%--------------------------------------------------------------------
-check_async_resp({ok, {Action, UUID}}, ExpStatus) ->
+check_async_resp({ok, {Action, <<_:128>> = UUID}}, ExpStatus) ->
+    UUIDStr = uuid_to_str(UUID),
     ct:pal("Sent async notification, req was ~p (uuid: ~p)",
-           [Action, UUID]),
+           [Action, UUIDStr]),
     ?assert(lists:member(Action, [queued, submitted])),
     case wait_for_response(UUID, 5000) of
-        {ok, ParsedResp} ->
+        {ok, {UUID, ParsedResp}} ->
             ct:pal("Received async response ~p", [ParsedResp]),
             check_parsed_resp(ParsedResp, ExpStatus),
-            UUID = value(uuid, ParsedResp),
-            true = is_uuid(UUID);
+            UUIDStr = value(uuid, ParsedResp);
         Error ->
             ct:pal("Received async error result ~p", [Error]),
             check_match(Error, ExpStatus)
@@ -695,8 +705,10 @@ check_async_resp(Resp, ExpStatus) ->
     check_match(Resp, ExpStatus).
 
 check_match(Resp, CheckFun) when is_function(CheckFun, 1) ->
+    ct:pal("CheckFun(resp: ~p)", [Resp]),
     CheckFun(Resp);
 check_match(Resp, ExpStatus) ->
+    ct:pal("assertMatch(resp: ~p, expstatus: ~p)", [Resp, ExpStatus]),
     ?assertMatch(Resp, ExpStatus).
 
 %%--------------------------------------------------------------------
@@ -714,8 +726,4 @@ sim_nf_fun(#{} = Map, #{reason := Reason} = SimMap) ->
 %%--------------------------------------------------------------------
 uuid_to_str(<<_:128>> = UUID) ->
     uuid:uuid_to_string(UUID, binary_standard).
-
-%%--------------------------------------------------------------------
-str_to_uuid(UUID) ->
-    uuid:string_to_uuid(UUID).
 
