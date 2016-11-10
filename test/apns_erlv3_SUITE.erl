@@ -13,13 +13,13 @@
 -import(apns_erlv3_test_support,
         [add_props/2, check_parsed_resp/2, end_group/1, fix_all_cert_paths/2,
          format_str/2, format_bin/2, bin_prop/2, rand_push_tok/0, gen_uuid/0,
-         wait_for_response/2, make_nf/1, make_nf/2, make_api_nf/2,
+         make_nf/1, make_nf/2, make_api_nf/2,
          maybe_prop/2, maybe_plist/2, plist/3, send_fun/4, send_fun_nf/4,
-         gen_send_fun/4, send_funs/2, check_sync_resp/2, check_async_resp/2,
+         gen_send_fun/4, send_funs/2,
          check_match/2, sim_nf_fun/2, fix_simulator_cert_paths/2,
          for_all_sessions/2, is_uuid/1, reason_list/0, start_group/2,
-         start_session/2, start_simulator/4, stop_session/3, to_bin_prop/2,
-         value/2, wait_until_sim_active/1]).
+         start_session/2, start_simulator/4, stop_session/3, str_to_uuid/1,
+         to_bin_prop/2, value/2, wait_until_sim_active/1]).
 
 %% These tests are expanded using test_generator.erl's
 %% parse transform into tests for sync & async, session & api
@@ -531,15 +531,16 @@ bad_nf_backend(doc) -> ["Ensure backend errors are handled correctly"];
 bad_nf_backend(Config) ->
     F = fun(Session) ->
                 Name = ?name(Session),
-                UUID = gen_uuid(),
+                UUIDStr = gen_uuid(),
+                UUID = str_to_uuid(UUIDStr),
                 Nf = [
-                      {uuid, UUID},
+                      {uuid, UUIDStr},
                       {alert, <<"Should be bad topic">>},
                       {token, sc_util:to_bin(rand_push_tok())},
                       {topic, <<"Some BS Topic">>}
                      ],
 
-                {ok, PResp} = sc_push_svc_apnsv3:send(Name, Nf),
+                {ok, {UUID, PResp}} = sc_push_svc_apnsv3:send(Name, Nf),
                 ct:pal("Sent notification via API, Resp = ~p", [PResp]),
                 CheckFun = fun(Status) ->
                                    ?assertEqual(?pstatus(PResp), Status),
@@ -602,7 +603,7 @@ resume_and_send(Config) when is_list(Config)  ->
                 ok = apns_erlv3_session:resume(Name),
 
                 ct:pal("Sending via resumed session ~p, Nf = ~p", [Name, Nf]),
-                {ok, ParsedResp} = apns_erlv3_session:send(Name, Nf),
+                {ok, {UUID, ParsedResp}} = apns_erlv3_session:send(Name, Nf),
                 ct:pal("Sent notification, Resp = ~p", [ParsedResp]),
                 check_parsed_resp(ParsedResp, success)
         end,
@@ -615,12 +616,13 @@ async_session_send_user_callback(Config) ->
     Cb = async_user_callback_fun(),
     F = fun(Session) ->
                 Name = ?name(Session),
-                UUID = gen_uuid(),
+                UUIDStr = gen_uuid(),
+                UUID = str_to_uuid(UUIDStr),
                 APS = [{aps, [{alert, <<"Testing async user callback">>},
                               {'content-available', 1}
                              ]}],
                 Nf = [
-                      {uuid, UUID},
+                      {uuid, UUIDStr},
                       {token, sc_util:to_bin(rand_push_tok())},
                       {topic, <<"com.example.FakeApp.voip">>},
                       {json, jsx:encode(APS)}
@@ -632,7 +634,7 @@ async_session_send_user_callback(Config) ->
                        [Session, Result]),
                 {ok, {submitted, RUUID}} = Result,
                 ?assertEqual(RUUID, UUID),
-                async_receive_user_cb(RUUID)
+                async_receive_user_cb(UUIDStr)
         end,
     for_all_sessions(F, ?sessions(Config)).
 
@@ -643,9 +645,10 @@ async_api_send_user_callback(Config) ->
     Cb = async_user_callback_fun(),
     F = fun(Session) ->
                 Name = ?name(Session),
-                UUID = gen_uuid(),
+                UUIDStr = gen_uuid(),
+                UUID = str_to_uuid(UUIDStr),
                 Nf = [{alert, <<"Testing async api user callback">>},
-                      {uuid, UUID},
+                      {uuid, UUIDStr},
                       {token, sc_util:to_bin(rand_push_tok())},
                       {topic, <<"com.example.FakeApp.voip">>}
                      ],
@@ -656,7 +659,7 @@ async_api_send_user_callback(Config) ->
                        [Name, Result]),
                 {ok, {submitted, RUUID}} = Result,
                 ?assertEqual(RUUID, UUID),
-                async_receive_user_cb(RUUID)
+                async_receive_user_cb(UUIDStr)
         end,
     for_all_sessions(F, ?sessions(Config)).
 
@@ -706,10 +709,10 @@ async_user_callback_fun() ->
     fun(NfPL, Req, Resp) ->
             case value(from, NfPL) of
                 Caller when is_pid(Caller) ->
-                    UUID = value(uuid, NfPL),
-                    ct:pal("Invoke callback for UUID ~s, caller ~p",
-                           [UUID, Caller]),
-                    Caller ! {user_defined_cb, #{uuid => UUID,
+                    UUIDStr = value(uuid, NfPL),
+                    ct:pal("Invoke callback for UUIDStr ~s, caller ~p",
+                           [UUIDStr, Caller]),
+                    Caller ! {user_defined_cb, #{uuid => UUIDStr,
                                                  nf => NfPL,
                                                  req => Req,
                                                  resp => Resp}},
@@ -721,12 +724,12 @@ async_user_callback_fun() ->
     end.
 
 %%--------------------------------------------------------------------
-async_receive_user_cb(UUID) ->
+async_receive_user_cb(UUIDStr) ->
     receive
-        {user_defined_cb, #{uuid := UUID, resp := Resp}=Map} ->
-            ct:pal("Got async apns v3 response, result map: ~p",
-                   [Map]),
-            {ok, ParsedResponse} = Resp,
+        {user_defined_cb, #{uuid := UUIDStr, resp := Resp}=Map} ->
+            ct:pal("Got async apns v3 response, result map: ~p", [Map]),
+            UUID = str_to_uuid(UUIDStr),
+            {ok, {UUID, ParsedResponse}} = Resp,
             check_parsed_resp(ParsedResponse, success);
         Msg ->
             ct:fail("async_receive_user_cb got unexpected message: ~p", [Msg])
