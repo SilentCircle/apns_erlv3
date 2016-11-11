@@ -1598,10 +1598,12 @@ gen_send_callback(ReplyFun, NfPL, Req, Resp) when is_function(ReplyFun, 3) ->
 
 %%--------------------------------------------------------------------
 %% @private
-log_response({ok, [_|_] = ParsedResp}, _Req) ->
-    ?LOG_DEBUG("Received parsed response: ~p", [ParsedResp]);
-log_response({error, [_|_] = ParsedResp}, _Req) ->
-    ?LOG_DEBUG("Received error response: ~p", [ParsedResp]);
+log_response({ok, {UUID, [_|_] = ParsedResp}}, _Req) ->
+    ?LOG_DEBUG("Received parsed response (uuid ~s): ~p",
+               [uuid_to_str(UUID), ParsedResp]);
+log_response({error, {UUID, [_|_] = ParsedResp}}, _Req) ->
+    ?LOG_DEBUG("Received error response (uuid ~s): ~p",
+               [uuid_to_str(UUID), ParsedResp]);
 log_response(Resp, {ReqHdrs, ReqBody}) ->
     ?LOG_WARNING("Error sending request, error: ~p\n"
                  "headers: ~p\nbody: ~p\n", [Resp, ReqHdrs, ReqBody]).
@@ -1949,6 +1951,11 @@ check_status(ParsedResp) ->
 -spec str_to_uuid(uuid_str()) -> uuid().
 str_to_uuid(UUID) ->
     uuid:string_to_uuid(UUID).
+
+%%--------------------------------------------------------------------
+-spec uuid_to_str(uuid()) -> uuid_str().
+uuid_to_str(<<_:128>> = UUID) ->
+    uuid:uuid_to_string(UUID, binary_standard).
 
 %%--------------------------------------------------------------------
 
