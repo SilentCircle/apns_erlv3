@@ -22,6 +22,7 @@
 -export([start/2, stop/1]).
 
 -include_lib("lager/include/lager.hrl").
+-include("apns_erlv3_internal.hrl").
 
 %% ===================================================================
 %% Application callbacks
@@ -33,8 +34,9 @@
 %%--------------------------------------------------------------------
 start(_StartType, _StartArgs) ->
     {ok, App} = application:get_application(?MODULE),
+    ?LOG_INFO("Starting app ~p", [App]),
     Env = application:get_all_env(App),
-    lager:info("Starting app ~p with env: ~p", [App, Env]),
+    ?LOG_DEBUG("App ~p env: ~p", [App, Env]),
     Sessions = sc_util:req_val(sessions, Env),
     Service = sc_util:req_val(service, Env),
     case sc_push_svc_apnsv3:start_link(Sessions) of
@@ -58,7 +60,7 @@ stop(_State) ->
         sc_push_lib:unregister_service(SvcName)
     catch
         Class:Reason ->
-            lager:error("Unable to deregister apns v3 service: ~p",
-                        [{Class, Reason}])
+            ?LOG_ERROR("Unable to deregister apns v3 service.\nStacktrace: ~s",
+                       [?STACKTRACE(Class, Reason)])
     end,
     ok.

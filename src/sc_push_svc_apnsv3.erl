@@ -351,7 +351,8 @@ async_send(Name, Notification, Opts) when is_list(Notification),
       SupFlags :: supervisor:sup_flags(),
       Children :: [supervisor:child_spec()].
 init(Opts) ->
-    ?LOG_INFO("Starting service with opts: ~p", [Opts]),
+    ?LOG_INFO("Starting APNSv3 (HTTP/2) services ~p", [service_names(Opts)]),
+    ?LOG_DEBUG("APNSv3 service opts: ~p", [Opts]),
     RestartStrategy    = one_for_one,
     MaxRestarts        = 10, % If there are more than this many restarts
     MaxTimeBetRestarts = 60, % In this many seconds, then terminate supervisor
@@ -415,3 +416,10 @@ make_aps(Notification) ->
 replace_prop(Key, PL, NewVal) ->
     lists:keystore(Key, 1, PL, {Key, NewVal}).
 
+%%--------------------------------------------------------------------
+%% @private
+service_names(Opts) ->
+    lists:foldr(fun(Props, Acc) when is_list(Props) ->
+                        [proplists:get_value(name, Props, unknown) | Acc];
+                   (_, Acc) -> Acc
+                end, [], Opts).

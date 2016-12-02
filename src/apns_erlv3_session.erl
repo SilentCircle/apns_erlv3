@@ -670,7 +670,9 @@ send_cb(FsmRef, Opts, Callback) when is_list(Opts) andalso
         ?LOG_DEBUG("Sending sync notification ~p", [Nf]),
         try_send(FsmRef, sync, Nf)
     catch
-        _:Reason ->
+        Class:Reason ->
+            ?LOG_ERROR("Bad notification, opts: ~p\nStacktrace: ~s",
+                       [Opts, ?STACKTRACE(Class, Reason)]),
             {error, {bad_notification,
                      [{mod, ?MODULE},
                       {line, ?LINE},
@@ -773,8 +775,10 @@ init([Name, Opts]) ->
         State = init_queue(init_state(Name, Opts)),
         bootstrap(State)
     catch
-        _What:Why ->
-            {stop, {Why, erlang:get_stacktrace()}}
+        Class:Reason ->
+            ?LOG_CRITICAL("APNS HTTP/2 session ~p init failed\nStacktrace:~s",
+                          [Name, ?STACKTRACE(Class, Reason)]),
+            {stop, {Reason, erlang:get_stacktrace()}}
     end.
 
 
@@ -823,16 +827,22 @@ handle_sync_event(Event, {Pid, _Tag}, StateName, State) ->
 
 
 %% @private
+handle_info({'EXIT', CrashPid, normal}, StateName,
+            #?S{http2_pid = Pid} = State) when CrashPid =:= Pid ->
+    ?LOG_INFO("HTTP/2 client ~p died normally while ~p",
+              [Pid, StateName]),
+    handle_connection_closure(StateName, State);
 handle_info({'EXIT', CrashPid, Reason}, StateName,
             #?S{http2_pid = Pid} = State) when CrashPid =:= Pid ->
-    ?LOG_WARNING("HTTP/2 client ~p died while ~p: ~p",
-                 [Pid, StateName, Reason]),
+    ?LOG_WARNING("HTTP/2 client ~p died while ~p, reason: ~p",
+                [Pid, StateName, Reason]),
     handle_connection_closure(StateName, State);
 handle_info({'EXIT', Pid, Reason}, StateName, State) ->
-    ?LOG_WARNING("Unknown process ~p died while ~p: ~p",
-                 [Pid, StateName, Reason]),
+    ?LOG_NOTICE("Unknown process ~p died while ~p: ~p",
+                [Pid, StateName, Reason]),
     continue(StateName, State);
 handle_info({'END_STREAM', StreamId}, StateName, State) ->
+    ?LOG_DEBUG("HTTP/2 end of stream id ~p while ~p", [StreamId, StateName]),
     NewState = handle_end_of_stream(StreamId, StateName, State),
     continue(StateName, NewState);
 handle_info(Info, StateName, State) ->
@@ -846,7 +856,7 @@ terminate(Reason, StateName, State) ->
     WaitingCallers = State#?S.stop_callers,
     QueueLen = queue_length(State),
     Fmt = ("APNS HTTP/2 session ~p terminated in state ~p with ~w queued "
-           "notifications: ~p"),
+           "notifications, reason: ~p"),
     Args = [State#?S.name, StateName, QueueLen, Reason],
     case QueueLen of
         0 -> ?LOG_INFO(Fmt, Args);
@@ -886,9 +896,9 @@ connecting(connect, State) ->
                       "on HTTP/2 client pid ~p", [Name, Host, Port, Pid]),
             next(connecting, connected, State#?S{http2_pid = Pid});
         {error, {{badmatch, Reason}, _}} ->
-            ?LOG_ERROR("APNS HTTP/2 session ~p failed to connect "
-                       "to ~s:~w, probable configuration error: ~p",
-                       [Name, Host, Port, Reason]),
+            ?LOG_CRITICAL("APNS HTTP/2 session ~p failed to connect "
+                          "to ~s:~w, probable configuration error: ~p",
+                          [Name, Host, Port, Reason]),
             stop(connecting, Reason, State);
         {error, Reason} ->
             ?LOG_ERROR("APNS HTTP/2 session ~p failed to connect "
@@ -988,8 +998,8 @@ flush_queued_notifications(#?S{queue = Queue} = State) ->
                     {error, NewState}
             end;
         {{value, #nf{} = Nf}, NewQueue} ->
-            ?LOG_DEBUG("Notification ~s with token ~s expired",
-                       [Nf#nf.uuid, tok_s(Nf)]),
+            ?LOG_NOTICE("Notification ~s with token ~s expired",
+                        [Nf#nf.uuid, tok_s(Nf)]),
             notify_failure(Nf, expired),
             flush_queued_notifications(State#?S{queue = NewQueue})
     end.
@@ -1676,9 +1686,9 @@ send_impl(Http2Client, {ReqHdrs, ReqBody}) ->
         Result
     catch
         What:Why ->
-            WW = {What, Why},
-            ?LOG_ERROR("Exception sending request, error: ~p\n"
-                       "headers: ~p\nbody: ~p\n", [WW, ReqHdrs, ReqBody]),
+            ?LOG_ERROR("Exception sending request, headers: ~p\n"
+                       "body: ~p\nStacktrace:~s",
+                       [ReqHdrs, ReqBody, ?STACKTRACE(What, Why)]),
             Why
     end.
 
@@ -1882,10 +1892,12 @@ run_send_callback(#apns_erlv3_req{} = R, StateName, RespResult) ->
         _ = Callback(NfPL, Req, RespResult),
         ok
     catch
-        _:Error ->
-            ?LOG_ERROR("Callback exception in state ~p, req: ~p, result: ~p,"
-                       " error: ~p", [StateName, Req, RespResult, Error]),
-            {error, Error}
+        Class:Reason ->
+            ?LOG_ERROR("Callback exception in state ~p, req: ~p\n"
+                       "result: ~p\nStacktrace:~s",
+                       [StateName, Req, RespResult,
+                        ?STACKTRACE(Class, Reason)]),
+            {error, Reason}
     end;
 run_send_callback(undefined, StateName, RespResult) ->
     ?LOG_ERROR("Cannot run callback for result ~p in state ~p",
