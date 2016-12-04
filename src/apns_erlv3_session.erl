@@ -64,7 +64,7 @@
 %%%   <ul>
 %%%    <li>To validate the APNS certificate unless
 %%%    `disable_apns_cert_validation' is `true'.</li>
-%%%    <li>When this supports JWT authentication, it will be
+%%%    <li>When JWT authentication is active, it will be
 %%%    used as the Issuer (iss) in the JWT.</li>
 %%%    </ul>
 %%%   </dd>
@@ -73,6 +73,12 @@
 %%%   <dd>The AppID Suffix as a binary, usually in reverse DNS format.  This is
 %%%   used to validate the APNS certificate unless
 %%%   `disable_apns_cert_validation' is `true'.  </dd>
+%%%
+%%% <dt>`apns_jwt_keyfile'</dt>
+%%%   <dd>The name of the PEM-encoded JWT signing key to be used for
+%%%   authetication. This value is mutually exclusive with `ssl_opts'.
+%%%   If this value is provided, `ssl_opts' will be ignored.
+%%%   </dd>
 %%%
 %%% <dt>`apns_topic'</dt>
 %%%   <dd>The <b>default</b> APNS topic to which to push notifications. If a
@@ -302,6 +308,7 @@
                   | {priority, integer()}
                   | {expiry, integer()}
                   | {json, binary()}
+                  | {authorization, binary()}
                   .
 
 -type send_opts() :: [send_opt()].
@@ -328,15 +335,25 @@
 %%% Records
 %%% ==========================================================================
 
+-record(jwt_info, {
+          kid = <<>> :: binary(),   % JWT Key ID
+          iss = <<>> :: binary(),   % KWT issuer (team ID)
+          key = <<>> :: binary()    % PEM-encoded private key data
+         }).
+
+-type jwt_info() :: #jwt_info{}.
+
 %%% Process state
 -record(?S,
         {name               = undefined                  :: atom(),
          http2_pid          = undefined                  :: pid() | undefined,
          host               = ""                         :: string(),
          port               = ?DEFAULT_APNS_PORT         :: non_neg_integer(),
-         app_id_suffix     = <<>>                        :: binary(),
+         app_id_suffix      = <<>>                       :: binary(),
+         apns_auth          = <<>>                       :: binary(), % current JWT
          apns_env           = undefined                  :: prod | dev,
          apns_topic         = <<>>                       :: undefined | binary(),
+         jwt_info           = undefined                  :: undefined | jwt_info(),
          ssl_opts           = []                         :: list(),
          retry_strategy     = ?DEFAULT_RETRY_STRATEGY    :: exponential | fixed,
          retry_delay        = ?DEFAULT_RETRY_DELAY       :: non_neg_integer(),
@@ -1242,11 +1259,10 @@ enter(disconnecting, State) ->
 %% @private
 init_state(Name, Opts) ->
     {Host, Port, ApnsEnv} = validate_host_port_env(Opts),
-    {SslOpts, CertData} = validate_ssl_opts(pv_req(ssl_opts, Opts)),
     AppIdSuffix = validate_app_id_suffix(Opts),
     {ok, ApnsTopic} = get_default_topic(Opts),
     TeamId = validate_team_id(Opts),
-    maybe_validate_apns_cert(Opts, CertData, AppIdSuffix, TeamId),
+    {SslOpts, JwtInfo} = get_auth_info(AppIdSuffix, TeamId, Opts),
 
     RetryStrategy = validate_retry_strategy(Opts),
     RetryDelay = validate_retry_delay(Opts),
@@ -1263,15 +1279,35 @@ init_state(Name, Opts) ->
     #?S{name = Name,
         host = binary_to_list(Host), % h2_client requires a list
         port = Port,
+        apns_auth = make_apns_auth(JwtInfo),
         apns_env = ApnsEnv,
         apns_topic = ApnsTopic,
-        app_id_suffix = TeamId,
+        app_id_suffix = AppIdSuffix,
+        jwt_info = JwtInfo,
         ssl_opts = SslOpts,
         retry_strategy = RetryStrategy,
         retry_delay = RetryDelay,
         retry_max = RetryMax,
         req_store = req_store_new(?REQ_STORE)
        }.
+
+
+-spec get_auth_info(AppIdSuffix, TeamId, Opts) -> Result when
+      AppIdSuffix :: binary(), TeamId :: binary(), Opts :: send_opts(),
+      Result :: {SslOpts, JwtInfo},
+      SslOpts :: list(), JwtInfo :: undefined | jwt_info().
+get_auth_info(AppIdSuffix, TeamId, Opts) ->
+    case pv(apns_jwt_info, Opts) of
+        {<<Kid/binary>>, <<KeyFile/binary>>} ->
+            SigningKey = validate_jwt_keyfile(KeyFile),
+            JwtInfo = #jwt_info{kid=Kid, iss=TeamId, key=SigningKey},
+            SslOpts = minimal_ssl_opts(),
+            {SslOpts, JwtInfo};
+        undefined ->
+            {SslOpts, CertData} = validate_ssl_opts(pv_req(ssl_opts, Opts)),
+            maybe_validate_apns_cert(Opts, CertData, AppIdSuffix, TeamId),
+            {SslOpts, undefined}
+    end.
 
 %% @private
 validate_host_port_env(Opts) ->
@@ -1290,6 +1326,8 @@ validate_host_port_env(Opts) ->
          ValidOpts :: {proplists:proplist(), CertData :: binary()}.
 
 %% @private
+%% Either we are doing JWT-based authentication or cert-based.
+%% If JWT-based, we don't want certfile or keyfile.
 validate_ssl_opts(SslOpts) ->
     CertFile = ?assertList(pv_req(certfile, SslOpts)),
     CertData = ?assertReadFile(CertFile),
@@ -1298,6 +1336,20 @@ validate_ssl_opts(SslOpts) ->
     DefSslOpts = apns_lib_http2:make_ssl_opts(CertFile, KeyFile),
     {lists:ukeymerge(1, lists:sort(SslOpts), lists:sort(DefSslOpts)),
      CertData}.
+
+validate_jwt_keyfile(KeyFile) ->
+    try
+        {ok, PemData} = file:open_file(KeyFile),
+        [RawPrivKeyInfo] = public_key:pem_decode(PemData),
+        PrivKeyInfo = public_key:pem_entry_decode(RawPrivKeyInfo),
+        PKA = PrivKeyInfo#'PrivateKeyInfo'.privateKeyAlgorithm,
+        Alg = PKA#'PrivateKeyInfo_privateKeyAlgorithm'.algorithm,
+        'id-ecPublicKey' = Alg, % assert correct alg
+        PemData
+    catch
+        _:_ ->
+            throw({bad_options, {invalid_jwt_keyfile, KeyFile}})
+    end.
 
 %% This is disabling the Team ID and AppID Suffix checks. It does not affect
 %% SSL validation.
@@ -1571,7 +1623,8 @@ apns_disconnect(Http2Client) when is_pid(Http2Client) ->
     when Nf :: nf(), State :: state(),
          Resp :: {ok, StreamId} | {error, term()}, StreamId :: term().
 apns_send(Nf, State) ->
-    Req = apns_lib_http2:make_req(Nf#nf.token, Nf#nf.json, nf_to_opts(Nf)),
+    Opts = make_opts(Nf, State),
+    Req = apns_lib_http2:make_req(Nf#nf.token, Nf#nf.json, Opts),
     case send_impl(State#?S.http2_pid, Req) of
         {ok, StreamId} = Result ->
             ReqInfo = #apns_erlv3_req{stream_id = StreamId, nf = Nf, req = Req},
@@ -1631,6 +1684,31 @@ async_reply({Pid, _Tag} = Caller, UUID, Resp) ->
 async_reply(Pid, UUID, Resp) when is_pid(Pid) ->
     ?LOG_DEBUG("async_reply for UUID ~p to caller ~p", [UUID, Pid]),
     Pid ! make_apns_response(UUID, Resp).
+
+%%--------------------------------------------------------------------
+%% @private
+minimal_ssl_opts() ->
+    [
+     {honor_cipher_order, false},
+     {versions, ['tlsv1.2']},
+     {alpn_preferred_protocols, [<<"h2">>]}
+    ].
+
+%%--------------------------------------------------------------------
+%% @private
+-spec make_opts(Nf, State) -> Opts when
+      Nf :: nf(), State :: state(), Opts :: send_opts().
+make_opts(Nf, #?S{apns_auth=undefined}) ->
+    nf_to_opts(Nf);
+make_opts(Nf, #?S{apns_auth=Jwt}) ->
+    [{authorization, Jwt} | nf_to_opts(Nf)].
+
+%%--------------------------------------------------------------------
+%% @private
+make_apns_auth(undefined) ->
+    undefined;
+make_apns_auth(#jwt_info{kid=Kid, iss=Iss, key=Key}) ->
+    apns_jwt:jwt(Kid, Iss, Key).
 
 %%--------------------------------------------------------------------
 %% The idea here is not to provide values that APNS will default,
