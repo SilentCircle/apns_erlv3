@@ -2056,7 +2056,6 @@ check_403(ParsedResp) ->
     end.
 
 %%--------------------------------------------------------------------
-
 -spec str_to_uuid(uuid_str()) -> uuid().
 str_to_uuid(UUID) ->
     uuid:string_to_uuid(UUID).
@@ -2067,18 +2066,6 @@ uuid_to_str(<<_:128>> = UUID) ->
     uuid:uuid_to_string(UUID, binary_standard).
 
 %%--------------------------------------------------------------------
-
--spec str_to_uuid(uuid_str()) -> uuid().
-str_to_uuid(UUID) ->
-    uuid:string_to_uuid(UUID).
-
-%%--------------------------------------------------------------------
--spec uuid_to_str(uuid()) -> uuid_str().
-uuid_to_str(<<_:128>> = UUID) ->
-    uuid:uuid_to_string(UUID, binary_standard).
-
-%%--------------------------------------------------------------------
-
 %% @private
 req_store_new(Name) ->
     ets:new(Name, [set, protected, {keypos, #apns_erlv3_req.stream_id}]).
