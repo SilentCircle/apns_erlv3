@@ -1,6 +1,6 @@
 [{<<"apns_erl_util">>,
   {git,"git@github.com:SilentCircle/apns_erl_util.git",
-       {ref,"6c62d3093bb03bf1b95833e8f4adbefd12ea2135"}},
+       {ref,"1c906b9e9713c7f2a77d7a47c873ce1d739af20d"}},
   0},
  {<<"chatterbox">>,
   {git,"https://github.com/joedevivo/chatterbox.git",

@@ -4,7 +4,7 @@
 -include("apns_erlv3_defs.hrl").
 
 -export([
-         add_props/2,
+         set_props/2,
          check_parsed_resp/2,
          end_group/1,
          fix_all_cert_paths/2,
@@ -48,6 +48,7 @@
          to_bin_prop/2,
          value/2,
          value/3,
+         wait_for_connected/2,
          wait_until_sim_active/1,
          wait_until_sim_active/2
         ]).
@@ -56,8 +57,8 @@
 %%====================================================================
 %% API
 %%====================================================================
-add_props(FromProps, ToProps) ->
-    lists:foldl(fun(KV, Acc) -> add_prop(KV, Acc) end, ToProps, FromProps).
+set_props(FromProps, ToProps) ->
+    lists:foldl(fun(KV, Acc) -> set_prop(KV, Acc) end, ToProps, FromProps).
 
 %%--------------------------------------------------------------------
 check_parsed_resp(ParsedResp, ExpStatus) ->
@@ -87,10 +88,10 @@ check_status(ActualStatus, CheckFun) when is_function(CheckFun, 1) ->
     CheckFun(ActualStatus);
 check_status(ActualStatus, ExpStatus) ->
     case ExpStatus of
-        any     ->  ok;
-        success -> ?assertEqual(ActualStatus, <<"200">>);
-        failure -> ?assertNotEqual(ActualStatus, <<"200">>);
-        _       -> ?assertEqual(ActualStatus, ExpStatus)
+        any     -> ok;
+        success -> ?assertEqual(<<"200">>, ActualStatus);
+        failure -> ?assertNotEqual(<<"200">>, ActualStatus);
+        _       -> ?assertEqual(ExpStatus, ActualStatus)
     end.
 
 %%--------------------------------------------------------------------
@@ -117,7 +118,7 @@ fix_simulator_cert_paths(DataDir, SimConfig) ->
     SslOptsKey = ssl_options,
     SslOpts0 = value(SslOptsKey, SimConfig),
     SslOpts = fix_ssl_opts(SslOpts0, DataDir),
-    replace_kv(SslOptsKey, SslOpts, SimConfig).
+    set_prop({SslOptsKey, SslOpts}, SimConfig).
 
 %%--------------------------------------------------------------------
 for_all_sessions(Fun, Sessions) when is_function(Fun, 1), is_list(Sessions) ->
@@ -136,11 +137,11 @@ make_aps_props(Alert) ->
 
 %%--------------------------------------------------------------------
 make_aps_props(Alert, Badge) when is_integer(Badge) ->
-    add_prop({badge, Badge}, make_aps_props(Alert)).
+    set_prop({badge, Badge}, make_aps_props(Alert)).
 
 %%--------------------------------------------------------------------
 make_aps_props(Alert, Badge, Sound) when is_integer(Badge) ->
-    add_prop(to_bin_prop(sound, Sound), make_aps_props(Alert, Badge)).
+    set_prop(to_bin_prop(sound, Sound), make_aps_props(Alert, Badge)).
 
 %%--------------------------------------------------------------------
 make_sim_notification(Notification, SimCfg) ->
@@ -218,7 +219,7 @@ start_group(SessionStarter, Config) ->
     {ok, SessSupPid} = SessionStarter(),
     ct:pal("Started session sup with pid ~p", [SessSupPid]),
     unlink(SessSupPid),
-    add_prop({sess_sup_pid, SessSupPid}, Config).
+    set_prop({sess_sup_pid, SessSupPid}, Config).
 
 %%--------------------------------------------------------------------
 start_session(Opts, StartFun) when is_list(Opts),
@@ -256,8 +257,10 @@ stop_session(SessCfg, StartedSessions, StopFun) when is_list(SessCfg),
                            [Pid, Reason]),
                     ok
             after 2000 ->
-                      erlang:demonitor(Ref),
-                      {error, timeout}
+                      safe_demonitor(Ref),
+                      erlang:exit(Pid, kill),
+                      ct:pal("Had to kill pid ~p because it timed out", [Pid]),
+                      ok
             end
     end.
 
@@ -400,7 +403,7 @@ wait_connected_loop(Pid) ->
                 {timeout, Self} ->
                     throw(session_connect_timeout)
             after
-                1000 ->
+                250 ->
                     wait_connected_loop(Pid)
             end;
         Error ->
@@ -421,9 +424,7 @@ get_saved_value(K, Config, Def) ->
 fix_cert_paths({ConfigKey, SslOptsKey}, DataDir, Session) ->
     Config = value(ConfigKey, Session),
     SslOpts = fix_ssl_opts(value(SslOptsKey, Config), DataDir),
-    replace_kv(ConfigKey,
-               replace_kv(SslOptsKey, SslOpts, Config),
-               Session).
+    set_prop({ConfigKey, set_prop({SslOptsKey, SslOpts}, Config)}, Session).
 
 
 %%--------------------------------------------------------------------
@@ -451,11 +452,7 @@ fix_opt_kv(Key, PL, DataDir) ->
     end.
 
 %%--------------------------------------------------------------------
-replace_kv(Key, Val, PL) ->
-    [{Key, Val} | delete_key(Key, PL)].
-
-%%--------------------------------------------------------------------
-add_prop({K, _V} = KV, Props) ->
+set_prop({K, _V} = KV, Props) ->
     lists:keystore(K, 1, Props, KV).
 
 %%--------------------------------------------------------------------
@@ -551,14 +548,30 @@ gen_uuid() ->
 
 %%--------------------------------------------------------------------
 wait_for_response(<<_:128>> = UUID, Timeout) ->
+    ct:pal("Wait timeout: ~B", [Timeout]),
+    Start = erlang:system_time(milli_seconds),
     receive
         {apns_response, v3, {UUID, Resp}} ->
             UUIDStr = uuid_to_str(UUID),
-            ct:pal("Received async apns v3 response, uuid: ~p, resp: ~p",
+            ct:pal("Received async apns v3 response, uuid: ~s,\nresp: ~p",
                    [UUIDStr, Resp]),
             Resp;
+        {apns_response, v3, {WrongUUID, Resp}} ->
+            UUIDStr = uuid_to_str(UUID),
+            WrongUUIDStr = uuid_to_str(WrongUUID),
+            ct:pal("Received wrong UUID in async apns v3 response "
+                   "(maybe a retransmit by the session).\n"
+                   "Expected uuid: ~p (~s)\n"
+                   "Actual uuid: ~p (~s)\n"
+                   "\nresp: ~p", [UUID, UUIDStr,
+                                  WrongUUID, WrongUUIDStr,
+                                  Resp]),
+            %% This may have been due a retransmit, so try again
+            %% until timeout.
+            Elapsed = erlang:system_time(milli_seconds) - Start,
+            wait_for_response(UUID, Timeout - Elapsed);
         Other ->
-            ct:fail({unexpected_response, Other})
+            {fail, {unexpected_response, Other}}
     after Timeout ->
               {error, timeout}
     end.
@@ -688,14 +701,16 @@ check_sync_resp(Resp, ExpStatus) ->
 %%--------------------------------------------------------------------
 check_async_resp({ok, {Action, <<_:128>> = UUID}}, ExpStatus) ->
     UUIDStr = uuid_to_str(UUID),
-    ct:pal("Sent async notification, req was ~p (uuid: ~p)",
-           [Action, UUIDStr]),
+    ct:pal("~p async notification, uuidstr: ~s\nuuid: ~w",
+           [Action, UUIDStr, UUID]),
     ?assert(lists:member(Action, [queued, submitted])),
     case wait_for_response(UUID, 5000) of
         {ok, {UUID, ParsedResp}} ->
             ct:pal("Received async response ~p", [ParsedResp]),
             check_parsed_resp(ParsedResp, ExpStatus),
             UUIDStr = value(uuid, ParsedResp);
+        {fail, Reason} ->
+            ct:fail(Reason);
         Error ->
             ct:pal("Received async error result ~p", [Error]),
             check_match(Error, ExpStatus)
@@ -726,4 +741,10 @@ sim_nf_fun(#{} = Map, #{reason := Reason} = SimMap) ->
 %%--------------------------------------------------------------------
 uuid_to_str(<<_:128>> = UUID) ->
     uuid:uuid_to_string(UUID, binary_standard).
+
+%%--------------------------------------------------------------------
+safe_demonitor(undefined) ->
+    ok;
+safe_demonitor(Ref) when is_reference(Ref) ->
+    erlang:demonitor(Ref).
 
