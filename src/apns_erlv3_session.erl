@@ -139,6 +139,21 @@
 %%%   Default value: `false'.
 %%% </dd>
 %%%
+%%% <dt>`jwt_max_age_secs'</dt>
+%%%   <dd>The number of seconds, measured from the "issued at" (iat)
+%%%   JWT POSIX time, after which the JWT should be preemptively reissued.
+%%%   The reissuance occurs just prior to the next notification transmission.
+%%%   <br/>
+%%%   Default value: 3300 seconds (55 minutes).
+%%%   </dd>
+%%%
+%%% <dt>`keepalive_interval '</dt>
+%%%   <dd>The number of seconds after which a PING should be sent to the
+%%%   peer host.
+%%%   <br/>
+%%%   Default value: 300 seconds (5 minutes).
+%%%   </dd>
+%%%
 %%% <dt>`ssl_opts'</dt>
 %%%   <dd>The property list of SSL options including the certificate file path.
 %%%   See [http://erlang.org/doc/man/ssl.html].
@@ -158,6 +173,8 @@
 %%%  {retry_delay, 1000},
 %%%  {retry_max, 60000},
 %%%  {disable_apns_cert_validation, false},
+%%%  {jwt_max_age_secs, 3300}.
+%%%  {keepalive_interval, 300}.
 %%%  {ssl_opts,
 %%%   [{certfile, "/some/path/com.example.MyApp.cert.pem"},
 %%%    {keyfile, "/some/path/com.example.MyApp.key.unencrypted.pem"},
@@ -204,7 +221,8 @@
          async_send/3,
          async_send_cb/4,
          sync_send_callback/3,
-         async_send_callback/3
+         async_send_callback/3,
+         flush/1
         ]).
 
 %%% Debugging Functions
@@ -270,6 +288,8 @@
 -define(DEFAULT_RETRY_MAX, 60*1000).
 -define(DEFAULT_EXPIRY_TIME, 16#7FFFFFFF). % INT_MAX, 32 bits
 -define(DEFAULT_PRIO, ?PRIO_IMMEDIATE).
+-define(DEFAULT_JWT_MAX_AGE_SECS, 60*55).
+-define(DEFAULT_KEEPALIVE_INTVL, 60*5).
 
 -define(REQ_STORE, ?MODULE).
 
@@ -295,6 +315,8 @@
                   {apns_env, prod | dev} |
                   {apns_topic, binary()} |
                   {disable_apns_cert_validation, boolean()} |
+                  {jwt_max_age_secs, non_neg_integer()} |
+                  {keepalive_interval, non_neg_integer()} |
                   {ssl_opts, list()} |
                   {retry_delay, non_neg_integer()} |
                   {retry_max, pos_integer()} |
@@ -350,10 +372,14 @@
          apns_env           = undefined                  :: prod | dev,
          apns_topic         = <<>>                       :: undefined | binary(),
          jwt_ctx            = undefined                  :: undefined | jwt_ctx(),
+         jwt_iat            = 0                          :: non_neg_integer(),
+         jwt_max_age_secs   = ?DEFAULT_JWT_MAX_AGE_SECS  :: non_neg_integer(),
          ssl_opts           = []                         :: list(),
          retry_strategy     = ?DEFAULT_RETRY_STRATEGY    :: exponential | fixed,
          retry_delay        = ?DEFAULT_RETRY_DELAY       :: non_neg_integer(),
          retry_max          = ?DEFAULT_RETRY_MAX         :: non_neg_integer(),
+         keepalive_ref      = undefined                  :: reference() | undefined,
+         keepalive_interval = ?DEFAULT_KEEPALIVE_INTVL   :: non_neg_integer(),
          retry_ref          = undefined                  :: reference() | undefined,
          retries            = 1                          :: non_neg_integer(),
          queue              = undefined                  :: sc_queue() | undefined,
@@ -737,6 +763,15 @@ sync_send_callback(NfPL, Req, Resp) ->
 async_send_callback(NfPL, Req, Resp) ->
     gen_send_callback(fun async_reply/3, NfPL, Req, Resp).
 
+%%--------------------------------------------------------------------
+%% @doc Flush (retransmit) any queued notifications.
+%% @end
+%%--------------------------------------------------------------------
+-spec flush(FsmRef) -> ok when FsmRef :: term().
+flush(FsmRef) ->
+    gen_fsm:send_event(FsmRef, flush).
+
+
 %%% ==========================================================================
 %%% Debugging Functions
 %%% ==========================================================================
@@ -942,6 +977,9 @@ connecting(Event, From, State) ->
 %% -----------------------------------------------------------------
 
 %% @private
+connected(ping, State) ->
+    send_ping(State#?S.http2_pid),
+    continue(connected, schedule_ping(State));
 connected(flush, State) ->
     {_, NewState} = flush_queued_notifications(State),
     continue(connected, NewState);
@@ -1028,20 +1066,20 @@ flush_queued_notifications(#?S{queue = Queue} = State) ->
                 {error, {UUID, ParsedResponse}, NewState},
       UUID :: uuid(), NewState :: state(),
       Reason :: term(), ParsedResponse :: apns_lib_http2:parsed_rsp().
-send_notification(#nf{uuid = UUIDStr} = Nf, Mode, State) ->
+send_notification(#nf{uuid = UUIDStr} = Nf, Mode, State0) ->
     ?LOG_DEBUG("Sending ~p notification: ~p", [Mode, Nf]),
     UUID = str_to_uuid(UUIDStr),
-    case apns_send(Nf, State) of
-        {ok, StreamId} ->
+    case apns_send(Nf, State0) of
+        {{ok, StreamId}, State} ->
             ?LOG_DEBUG("Submitted ~p notification ~s on stream ~p",
                        [Mode, UUIDStr, StreamId]),
             {ok, {submitted, UUID}, State};
-        {error, {{badmatch, _} = Reason, _}} ->
+        {{error, {{badmatch, _} = Reason, _}}, State} ->
             ?LOG_ERROR("Crashed on notification ~w, APNS HTTP/2 session ~p"
                        " with token ~s: ~p",
                        [UUIDStr, State#?S.name, tok_s(Nf), Reason]),
             {error, {UUID, Reason}, recover_notification(Nf, State)};
-        {error, ParsedResponse} ->
+        {{error, ParsedResponse}, State} ->
             ?LOG_WARNING("Failed to send notification ~s on APNS HTTP/2 "
                          "session ~p with token ~s:\n~p",
                          [UUIDStr, State#?S.name, tok_s(Nf), ParsedResponse]),
@@ -1206,6 +1244,10 @@ leave(connecting, State) ->
     % Cancel any scheduled reconnection.
     cancel_reconnect(State);
 
+leave(connected, State) ->
+    % Cancel any scheduled pings.
+    cancel_ping(State);
+
 leave(_, State) ->
     State.
 
@@ -1241,8 +1283,8 @@ enter(connecting, State) ->
 enter(connected, State) ->
     % Trigger the flush of queued notifications
     gen_fsm:send_event(self(), flush),
-    % Reset the exponential delay
-    reset_delay(State);
+    % Reset the exponential delay and start keepalive
+    schedule_ping(reset_delay(State));
 
 enter(disconnecting, State) ->
     % Trigger the disconnection when disconnecting.
@@ -1265,23 +1307,31 @@ init_state(Name, Opts) ->
     RetryStrategy = validate_retry_strategy(Opts),
     RetryDelay = validate_retry_delay(Opts),
     RetryMax = validate_retry_max(Opts),
+    JwtMaxAgeSecs = validate_jwt_max_age_secs(Opts),
+    KeepaliveInterval = validate_keepalive_interval(Opts),
 
     ?LOG_DEBUG("With options: host=~p, port=~w, "
                "retry_strategy=~w, retry_delay=~w, retry_max=~p, "
+               "jwt_max_age_secs=~w, KeepaliveInterval=~w, "
                "app_id_suffix=~p, apns_topic=~p",
                [Host, Port,
                 RetryStrategy, RetryDelay, RetryMax,
+                JwtMaxAgeSecs, KeepaliveInterval,
                 TeamId, ApnsTopic]),
     ?LOG_DEBUG("With SSL options: ~s", [format_props(SslOpts)]),
+
+    JWT = make_apns_auth(JwtCtx),
+    IssuedAt = jwt_iat(JWT),
 
     #?S{name = Name,
         host = binary_to_list(Host), % h2_client requires a list
         port = Port,
-        apns_auth = make_apns_auth(JwtCtx),
+        apns_auth = JWT,
         apns_env = ApnsEnv,
         apns_topic = ApnsTopic,
         app_id_suffix = AppIdSuffix,
         jwt_ctx = JwtCtx,
+        jwt_iat = IssuedAt, % POSIX time
         ssl_opts = SslOpts,
         retry_strategy = RetryStrategy,
         retry_delay = RetryDelay,
@@ -1452,6 +1502,13 @@ validate_retry_strategy(Opts) ->
 validate_retry_max(Opts) ->
     validate_non_neg(kv(retry_max, Opts, ?DEFAULT_RETRY_MAX)).
 
+%% @private
+validate_jwt_max_age_secs(Opts) ->
+    validate_non_neg(kv(jwt_max_age_secs, Opts, ?DEFAULT_JWT_MAX_AGE_SECS)).
+
+%% @private
+validate_keepalive_interval(Opts) ->
+    validate_non_neg(kv(keepalive_interval, Opts, ?DEFAULT_KEEPALIVE_INTVL)).
 
 %% @private
 pv(Key, PL) ->
@@ -1569,7 +1626,6 @@ cancel_reconnect(#?S{retry_ref = Ref} = State) ->
     catch erlang:cancel_timer(Ref),
     State#?S{retry_ref = undefined}.
 
-
 %% @private
 next_delay(#?S{retries = 0} = State) ->
     {0, State#?S{retries = 1}};
@@ -1589,6 +1645,22 @@ reset_delay(State) ->
     % Reset to 1 so the first reconnection is always done after the retry delay.
     State#?S{retries = 1}.
 
+%% @private
+schedule_ping(#?S{keepalive_ref=Ref,
+                  keepalive_interval=KI}=State) ->
+
+    _ = (catch erlang:cancel_timer(Ref)),
+    Delay = KI * 1000,
+    ?LOG_DEBUG("Scheduling PING frame (session ~p) in ~w ms",
+              [State#?S.name, Delay]),
+    NewRef = gen_fsm:send_event_after(Delay, ping),
+    State#?S{keepalive_ref = NewRef}.
+
+%% @private
+cancel_ping(#?S{keepalive_ref=Ref}=State) ->
+    _ = (catch erlang:cancel_timer(Ref)),
+    State#?S{keepalive_ref = undefined}.
+
 %%% --------------------------------------------------------------------------
 %%% APNS Handling Functions
 %%% --------------------------------------------------------------------------
@@ -1606,20 +1678,22 @@ apns_disconnect(Http2Client) when is_pid(Http2Client) ->
 
 %%--------------------------------------------------------------------
 %% @private
--spec apns_send(Nf, State) -> Resp
-    when Nf :: nf(), State :: state(),
+-spec apns_send(Nf, State) -> {Resp, NewState}
+    when Nf :: nf(), State :: state(), NewState :: state(),
          Resp :: {ok, StreamId} | {error, term()}, StreamId :: term().
 apns_send(Nf, State) ->
-    Opts = make_opts(Nf, State),
+    {Opts, NewState} = make_opts(Nf, State),
     Req = apns_lib_http2:make_req(Nf#nf.token, Nf#nf.json, Opts),
-    case send_impl(State#?S.http2_pid, Req) of
-        {ok, StreamId} = Result ->
-            ReqInfo = #apns_erlv3_req{stream_id = StreamId, nf = Nf, req = Req},
-            ok = req_add(State#?S.req_store, ReqInfo),
-            Result;
-        Error ->
-            Error
-    end.
+    Res = case send_impl(NewState#?S.http2_pid, Req) of
+              {ok, StreamId} = Result ->
+                  ReqInfo = #apns_erlv3_req{stream_id=StreamId,
+                                            nf=Nf, req=Req},
+                  ok = req_add(State#?S.req_store, ReqInfo),
+                  Result;
+              Error ->
+                  Error
+          end,
+    {Res, NewState}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -1685,12 +1759,25 @@ minimal_ssl_opts() ->
 
 %%--------------------------------------------------------------------
 %% @private
--spec make_opts(Nf, State) -> Opts when
-      Nf :: nf(), State :: state(), Opts :: send_opts().
-make_opts(Nf, #?S{apns_auth=undefined}) ->
-    nf_to_opts(Nf);
-make_opts(Nf, #?S{apns_auth=Jwt}) ->
-    [{authorization, Jwt} | nf_to_opts(Nf)].
+-spec make_opts(Nf, State) -> {Opts, NewState} when
+      Nf :: nf(), State :: state(), Opts :: send_opts(), NewState :: state().
+make_opts(Nf, #?S{apns_auth=undefined}=State) ->
+    {nf_to_opts(Nf), State};
+make_opts(Nf, #?S{}=State) ->
+    NewState = refresh_apns_auth(State),
+    NewAuth = NewState#?S.apns_auth,
+    Opts = [{authorization, NewAuth} | nf_to_opts(Nf)],
+    {Opts, NewState}.
+
+%%--------------------------------------------------------------------
+%% @private
+refresh_apns_auth(#?S{jwt_max_age_secs=MaxAgeSecs}=State) ->
+    case jwt_age(State) >= MaxAgeSecs of
+        true -> % Create fresh JWT
+            State#?S{apns_auth=make_apns_auth(State#?S.jwt_ctx)};
+        false ->
+            State
+    end.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -1758,6 +1845,18 @@ send_impl(Http2Client, {ReqHdrs, ReqBody}) ->
                        [ReqHdrs, ReqBody, ?STACKTRACE(What, Why)]),
             Why
     end.
+
+%%--------------------------------------------------------------------
+%% @private
+send_ping(Http2Client) ->
+    PingFrame = list_to_binary([http2_ping_header(), crypto:rand_bytes(8)]),
+    _ = ?LOG_DEBUG("Sending PING frame to peer: ~p", [PingFrame]),
+    ok = h2_connection:send_frame(Http2Client, <<PingFrame/binary>>).
+
+%%--------------------------------------------------------------------
+%% @private
+http2_ping_header() ->
+    <<0, 0, 8, 6, 0, 0, 0, 0, 0>>.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -1923,11 +2022,12 @@ handle_parsed_resp(ParsedResp, #apns_erlv3_req{} = Req,
                          "failed to send notification ~s, token ~s",
                          [State#?S.name, UUID, tok_s(Nf)]),
             NewState = State#?S{apns_auth=make_apns_auth(JwtCtx)},
-            ?LOG_DEBUG("NewState: ~s", [lager:pr(NewState, ?MODULE)]),
+            ?LOG_DEBUG("NewState: ~p", [lager:pr(NewState, ?MODULE)]),
             ?LOG_WARNING("Recovering failed notification ~s, "
                          "token ~s, session ~p",
-                         [UUID, tok_s(Nf), State#?S.name]),
-            recover_notification(Nf, NewState);
+                         [UUID, tok_s(Nf), NewState#?S.name]),
+            recover_notification(Nf, NewState),
+            flush(self());
         invalid_jwt ->
             Kid = apns_jwt:kid(JwtCtx),
             ?LOG_CRITICAL("ACTION REQUIRED: Invalid JWT signing key (kid: ~s)"
@@ -1939,7 +2039,8 @@ handle_parsed_resp(ParsedResp, #apns_erlv3_req{} = Req,
             ?LOG_WARNING("Failed to send notification on APNS HTTP/2 session"
                          " ~p, uuid: ~s, token: ~s:\nParsed resp: ~p",
                          [State#?S.name, UUID, tok_s(Nf), ParsedResp]),
-            maybe_recover_notification(ParsedResp, Nf, State)
+            maybe_recover_notification(ParsedResp, Nf, State),
+            flush(self())
     end.
 
 %%--------------------------------------------------------------------
@@ -2098,3 +2199,29 @@ req_remove(Tab, Id) ->
             true = ets:delete(Tab, Id),
             Req
     end.
+
+%% @private
+-spec base64urldecode(Data) -> Result when
+      Data :: list() | binary(), Result :: binary().
+base64urldecode(Data) when is_list(Data) ->
+    base64urldecode(list_to_binary(Data));
+base64urldecode(<<Data/binary>>) ->
+    Extra = case byte_size(Data) rem 3 of
+                0 -> <<>>;
+                1 -> <<"=">>;
+                2 -> <<"==">>
+            end,
+    B64Encoded = << << case Byte of $- -> $+; $_ -> $/; _ -> Byte end >>
+                    || <<Byte>> <= <<Data/binary, Extra/binary>> >>,
+    base64:decode(B64Encoded).
+
+%% @private
+jwt_iat(<<JWT/binary>>) ->
+    [_, Body, _] = string:tokens(binary_to_list(JWT), "."),
+    JSON = jsx:decode(base64urldecode(Body)),
+    sc_util:req_val(<<"iat">>, JSON).
+
+%% @private
+jwt_age(#?S{jwt_iat=IssuedAt}) ->
+    sc_util:posix_time() - IssuedAt.
+
