@@ -127,6 +127,7 @@ init_per_suite(Config) ->
     % ct:get_config(sessions) -> [Session].
     DataDir = ?config(data_dir, Config),
     ct:pal("Data directory is ~s", [DataDir]),
+    set_mnesia_dir(DataDir),
 
     PrivDir = ?config(priv_dir, Config),
     ct:pal("Private directory is ~s", [PrivDir]),
@@ -676,6 +677,9 @@ init_testcase(Case, Config, StartFun) when is_function(StartFun, 2) ->
     lager_common_test_backend:bounce(Level),
     DataDir = ?config(data_dir, Config),
     ct:pal("~p: Data directory is ~s", [Case, DataDir]),
+    ok = mnesia:create_schema([node()]),
+    ok = mnesia:start(),
+    ok = sc_push_reg_api:init(),
     Start = fun(Session) ->
                     Name = ?name(Session),
                     {ok, {Pid, _Ref}=S} = start_session(Session, StartFun),
@@ -697,6 +701,8 @@ init_testcase(Case, Config, StartFun) when is_function(StartFun, 2) ->
                      Arg :: {Name, Pid, Ref}, Name :: atom(), Pid :: pid(),
                      Ref :: reference(), Result :: {ok, {Pid, Ref}}.
 end_testcase(Case, Config, StopFun) when is_function(StopFun, 1) ->
+    mnesia:stop(),
+    ok = mnesia:delete_schema([node()]),
     StartedSessions = value(started_sessions, Config),
     ct:pal("~p: started_sessions is: ~p", [Case, StartedSessions]),
     Sessions = ?sessions(Config),
@@ -736,4 +742,10 @@ async_receive_user_cb(UUIDStr) ->
     after 1000 ->
               ct:fail({error, timeout})
     end.
+
+%%--------------------------------------------------------------------
+set_mnesia_dir(DataDir) ->
+    MnesiaDir = filename:join(DataDir, "db"),
+    ok = filelib:ensure_dir(MnesiaDir),
+    ok = application:set_env(mnesia, dir, MnesiaDir).
 

@@ -551,14 +551,30 @@ gen_uuid() ->
 
 %%--------------------------------------------------------------------
 wait_for_response(<<_:128>> = UUID, Timeout) ->
+    ct:pal("Wait timeout: ~B", [Timeout]),
+    Start = erlang:system_time(milli_seconds),
     receive
         {apns_response, v3, {UUID, Resp}} ->
             UUIDStr = uuid_to_str(UUID),
-            ct:pal("Received async apns v3 response, uuid: ~p, resp: ~p",
+            ct:pal("Received async apns v3 response, uuid: ~s,\nresp: ~p",
                    [UUIDStr, Resp]),
             Resp;
+        {apns_response, v3, {WrongUUID, Resp}} ->
+            UUIDStr = uuid_to_str(UUID),
+            WrongUUIDStr = uuid_to_str(WrongUUID),
+            ct:pal("Received wrong UUID in async apns v3 response "
+                   "(maybe a retransmit by the session).\n"
+                   "Expected uuid: ~p (~s)\n"
+                   "Actual uuid: ~p (~s)\n"
+                   "\nresp: ~p", [UUID, UUIDStr,
+                                  WrongUUID, WrongUUIDStr,
+                                  Resp]),
+            %% This may have been due a retransmit, so try again
+            %% until timeout.
+            Elapsed = erlang:system_time(milli_seconds) - Start,
+            wait_for_response(UUID, Timeout - Elapsed);
         Other ->
-            ct:fail({unexpected_response, Other})
+            {fail, {unexpected_response, Other}}
     after Timeout ->
               {error, timeout}
     end.
@@ -688,14 +704,16 @@ check_sync_resp(Resp, ExpStatus) ->
 %%--------------------------------------------------------------------
 check_async_resp({ok, {Action, <<_:128>> = UUID}}, ExpStatus) ->
     UUIDStr = uuid_to_str(UUID),
-    ct:pal("Sent async notification, req was ~p (uuid: ~p)",
-           [Action, UUIDStr]),
+    ct:pal("~p async notification, uuidstr: ~s\nuuid: ~w",
+           [Action, UUIDStr, UUID]),
     ?assert(lists:member(Action, [queued, submitted])),
     case wait_for_response(UUID, 5000) of
         {ok, {UUID, ParsedResp}} ->
             ct:pal("Received async response ~p", [ParsedResp]),
             check_parsed_resp(ParsedResp, ExpStatus),
             UUIDStr = value(uuid, ParsedResp);
+        {fail, Reason} ->
+            ct:fail(Reason);
         Error ->
             ct:pal("Received async error result ~p", [Error]),
             check_match(Error, ExpStatus)
