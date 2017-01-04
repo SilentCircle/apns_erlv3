@@ -292,6 +292,9 @@
 -define(DEFAULT_JWT_MAX_AGE_SECS, 60*55).
 -define(DEFAULT_KEEPALIVE_INTVL, 60*5).
 
+-define(DEFAULT_FLUSH_STRATEGY, on_reconnect). % ***DEBUG ONLY***, undocumented
+-define(DEFAULT_REQUEUE_STRATEGY, always). % ***DEBUG ONLY***, undocumented
+
 -define(REQ_STORE, ?MODULE).
 
 %%% ==========================================================================
@@ -309,6 +312,9 @@
 -type uuid_str() :: apns_lib_http2:uuid_str().
 -type reply_fun() :: fun((caller(), uuid(), cb_result()) -> none()).
 
+-type flush_strategy_opt() :: on_reconnect | debug_clear.
+-type requeue_strategy_opt() :: always | debug_never.
+
 -type option() :: {host, binary()} |
                   {port, non_neg_integer()} |
                   {app_id_suffix, binary()} |
@@ -321,7 +327,9 @@
                   {ssl_opts, list()} |
                   {retry_delay, non_neg_integer()} |
                   {retry_max, pos_integer()} |
-                  {retry_strategy, fixed | exponential}.
+                  {retry_strategy, fixed | exponential} |
+                  {flush_strategy, flush_strategy_opt()} |
+                  {requeue_strategy, requeue_strategy_opt()}.
 
 -type options() :: [option()].
 -type fsm_ref() :: atom() | pid().
@@ -386,7 +394,9 @@
          queue              = undefined                  :: sc_queue() | undefined,
          stop_callers       = []                         :: list(),
          quiesced           = false                      :: boolean(),
-         req_store          = undefined                  :: term()
+         req_store          = undefined                  :: term(),
+         flush_strategy     = ?DEFAULT_FLUSH_STRATEGY    :: flush_strategy_opt(),
+         requeue_strategy  = ?DEFAULT_REQUEUE_STRATEGY   :: requeue_strategy_opt()
         }).
 
 -type state() :: #?S{}.
@@ -943,6 +953,7 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %% -----------------------------------------------------------------
 %% @private
 connecting(connect, State) ->
+    ok = apns_disconnect(State#?S.http2_pid),
     #?S{name = Name, host = Host, port = Port, ssl_opts = Opts} = State,
     ?LOG_INFO("Connecting APNS HTTP/2 session ~p to ~s:~w",
               [Name, Host, Port]),
@@ -1024,7 +1035,7 @@ connected(Event, From, State) ->
 
 %% @private
 draining(drained, State) ->
-    next(draining, disconnecting, State);
+    next(draining, connecting, State);
 draining(ping, State) ->
     continue(draining, cancel_ping(State));
 draining(flush, State) ->
@@ -1076,7 +1087,13 @@ disconnecting(Event, From, State) ->
 %%% ==========================================================================
 
 %% @private
-flush_queued_notifications(#?S{queue = Queue} = State) ->
+flush_queued_notifications(#?S{flush_strategy = debug_clear,
+                              queue = Queue} = State) ->
+    ?LOG_WARNING("*** debug_clear flush_strategy is set. "
+                 "Queued notifications discarded:\n~p", [queue:to_list(Queue)]),
+    {ok, State#?S{queue = queue:new()}};
+flush_queued_notifications(#?S{flush_strategy = on_reconnect,
+                               queue = Queue} = State) ->
     Now = sc_util:posix_time(),
     case queue:out(Queue) of
         {empty, NewQueue} ->
@@ -1268,7 +1285,7 @@ transition(connected,     connecting,    State) -> State;
 transition(connected,     disconnecting, State) -> State;
 transition(connected,     draining,      State) -> State;
 transition(draining,      draining,      State) -> State;
-transition(draining,      disconnecting, State) -> State;
+transition(draining,      connecting,    State) -> State#?S{retries=0}; % Want immediate reconnect
 transition(disconnecting, connecting,    State) -> State.
 
 
@@ -1285,6 +1302,8 @@ enter(connecting, State) ->
     schedule_reconnect(State);
 
 enter(connected, State) ->
+    % Send a ping immediately to force any connection errors
+    gen_fsm:send_event(self(), ping),
     % Trigger the flush of queued notifications
     gen_fsm:send_event(self(), flush),
     % Reset the exponential delay and start keepalive
@@ -1313,6 +1332,8 @@ init_state(Name, Opts) ->
     RetryMax = validate_retry_max(Opts),
     JwtMaxAgeSecs = validate_jwt_max_age_secs(Opts),
     KeepaliveInterval = validate_keepalive_interval(Opts),
+    FlushStrategy = validate_flush_strategy(Opts),
+    RequeueStrategy = validate_requeue_strategy(Opts),
 
     ?LOG_DEBUG("With options: host=~p, port=~w, "
                "retry_strategy=~w, retry_delay=~w, retry_max=~p, "
@@ -1337,7 +1358,9 @@ init_state(Name, Opts) ->
                 retry_strategy = RetryStrategy,
                 retry_delay = RetryDelay,
                 retry_max = RetryMax,
-                req_store = req_store_new(?REQ_STORE)
+                req_store = req_store_new(?REQ_STORE),
+                flush_strategy = FlushStrategy,
+                requeue_strategy = RequeueStrategy
                },
 
     new_apns_auth(State).
@@ -1537,6 +1560,18 @@ validate_keepalive_interval(Opts) ->
 
 %%--------------------------------------------------------------------
 %% @private
+validate_flush_strategy(Opts) ->
+    validate_enum(kv(flush_strategy, Opts, ?DEFAULT_FLUSH_STRATEGY),
+                  [on_reconnect, debug_clear]).
+
+%%--------------------------------------------------------------------
+%% @private
+validate_requeue_strategy(Opts) ->
+    validate_enum(kv(requeue_strategy, Opts, ?DEFAULT_REQUEUE_STRATEGY),
+                  [always, debug_never]).
+
+%%--------------------------------------------------------------------
+%% @private
 pv(Key, PL) ->
     pv(Key, PL, undefined).
 
@@ -1641,8 +1676,13 @@ queue_nf(Nf, #?S{queue = Queue} = State) ->
 
 %%--------------------------------------------------------------------
 %% @private
-requeue_notification(Nf, #?S{queue = Queue} = State) ->
-    State#?S{queue = queue:in_r(Nf, Queue)}.
+requeue_notification(Nf, #?S{queue = Queue,
+                             requeue_strategy = always} = State) ->
+    State#?S{queue = queue:in_r(Nf, Queue)};
+requeue_notification(Nf, #?S{requeue_strategy = debug_never} = State) ->
+    ?LOG_WARNING("*** requeue_strategy = debug_never, not requeuing:\n~p",
+                 [Nf]),
+    State.
 
 
 %%% --------------------------------------------------------------------------
@@ -1685,6 +1725,12 @@ next_delay(#?S{retry_strategy = fixed} = State) ->
 reset_delay(State) ->
     % Reset to 1 so the first reconnection is always done after the retry delay.
     State#?S{retries = 1}.
+
+%%--------------------------------------------------------------------
+%% @private
+zero_delay(State) ->
+    % Reset to 0 so the first reconnection is always done immediately.
+    State#?S{retries = 0}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -2095,14 +2141,26 @@ handle_parsed_resp(ParsedResp, #apns_erlv3_req{} = Req, StateName,
             continue(StateName,
                      handle_unregistered_token(ParsedResp, Req, State0));
         internal_server_error ->
-            next(StateName, draining,
-                 handle_internal_server_error(ParsedResp, Req, State0));
+            State = handle_internal_server_error(ParsedResp, Req, State0),
+            next(StateName, connecting_or_draining(State), zero_delay(State));
         broken_session ->
-            next(StateName, draining,
-                 handle_broken_session(ParsedResp, Req, State0));
+            State = handle_broken_session(ParsedResp, Req, State0),
+            next(StateName, connecting_or_draining(State), zero_delay(State));
         error ->
             continue(StateName,
                      handle_parsed_resp_error(ParsedResp, Req, State0))
+    end.
+
+%%--------------------------------------------------------------------
+%% @private
+%% Return draining state if there are pending responses, otherwise
+%% connecting state.
+connecting_or_draining(State) ->
+    case req_count(State#?S.req_store) of
+        0 ->
+            connecting;
+        _ ->
+            draining
     end.
 
 %%--------------------------------------------------------------------

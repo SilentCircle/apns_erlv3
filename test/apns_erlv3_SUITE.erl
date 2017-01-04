@@ -289,7 +289,7 @@ reconnect_test(Config) when is_list(Config)  ->
                 ok = apns_erlv3_session:reconnect(Name),
                 {ok, StateName} = apns_erlv3_session:get_state_name(Name),
                 ct:pal("Session ~p state is ~p", [Name, StateName]),
-                ?assert(StateName =:= connecting)
+                ?assertEqual(StateName, connecting)
         end,
     for_all_sessions(F, ?sessions(Config)).
 
@@ -503,6 +503,7 @@ bad_in_general(Config) ->
     _ = [begin
              SimNfFun = sim_nf_fun(#{}, #{reason => Reason}),
              SendFun = apnsv3_test_gen:send_fun_nf(failure, SimNfFun),
+             wait_until_session_in_connected_state(Session),
              SendFun(Session)
          end || Reason <- reason_list(), Session <- ?sessions(Config)].
 
@@ -749,3 +750,7 @@ set_mnesia_dir(DataDir) ->
     ok = filelib:ensure_dir(MnesiaDir),
     ok = application:set_env(mnesia, dir, MnesiaDir).
 
+%%--------------------------------------------------------------------
+wait_until_session_in_connected_state(Session) ->
+    Pid = erlang:whereis(?name(Session)),
+    apns_erlv3_test_support:wait_for_connected(Pid, 5000).

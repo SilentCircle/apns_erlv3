@@ -48,6 +48,7 @@
          to_bin_prop/2,
          value/2,
          value/3,
+         wait_for_connected/2,
          wait_until_sim_active/1,
          wait_until_sim_active/2
         ]).
@@ -400,7 +401,7 @@ wait_connected_loop(Pid) ->
                 {timeout, Self} ->
                     throw(session_connect_timeout)
             after
-                1000 ->
+                250 ->
                     wait_connected_loop(Pid)
             end;
         Error ->
