@@ -1,4 +1,3 @@
-%%%----------------------------------------------------------------
 %%% Purpose: Test suite for the 'apns_erlv3' module.
 %%%-----------------------------------------------------------------
 -module(apns_erlv3_SUITE).
@@ -37,6 +36,8 @@
               bad_nf_backend/1
              ]).
 
+-record(nf_info, {session_name, token, uuid}).
+
 %%--------------------------------------------------------------------
 %% COMMON TEST CALLBACK FUNCTIONS
 %%--------------------------------------------------------------------
@@ -52,7 +53,8 @@ all() ->
      {group, debug_functions},
      {group, positive_send_notification_tests},
      {group, negative_send_notification_tests},
-     {group, quiesce_and_resume}
+     {group, quiesce_and_resume},
+     {group, recovery_under_stress}
     ].
 
 %%--------------------------------------------------------------------
@@ -103,8 +105,12 @@ groups() ->
       bad_in_general(suite) ++
       bad_nf_format(suite) ++
       bad_nf_backend(suite)
-     }
+     },
 
+     {recovery_under_stress, [], [
+                                  async_flood_and_disconnect
+                                 ]
+     }
     ].
 
 %%--------------------------------------------------------------------
@@ -605,7 +611,7 @@ resume_and_send(Config) when is_list(Config)  ->
                 ok = apns_erlv3_session:resume(Name),
 
                 ct:pal("Sending via resumed session ~p, Nf = ~p", [Name, Nf]),
-                {ok, {UUID, ParsedResp}} = apns_erlv3_session:send(Name, Nf),
+                {ok, {_UUID, ParsedResp}} = apns_erlv3_session:send(Name, Nf),
                 ct:pal("Sent notification, Resp = ~p", [ParsedResp]),
                 check_parsed_resp(ParsedResp, success)
         end,
@@ -665,6 +671,56 @@ async_api_send_user_callback(Config) ->
         end,
     for_all_sessions(F, ?sessions(Config)).
 
+%%--------------------------------------------------------------------
+%% Group: recovery_under_stress
+%%--------------------------------------------------------------------
+async_flood_and_disconnect(doc) ->
+    ["Test recovery from disconnect while many async notifications"
+     "are in progress"];
+async_flood_and_disconnect(Config) ->
+    Self = self(),
+    Cb = async_user_callback_fun(dont_log),
+    NumToSend = 200,
+    F = fun(Session) ->
+                Name = ?name(Session),
+                % Start a receiver process to collect the responses
+                ct:pal("Spawning receiver process..."),
+                Receiver = spawn(?MODULE, async_flood_receiver,
+                                 [NumToSend, Self]),
+                receive
+                    {Receiver, started} -> ok
+                end,
+                ct:pal("Spawned receiver process ~p", [Receiver]),
+                % Send off all the notifications asynchronously
+                L = do_n_times(NumToSend,
+                               fun() ->
+                                       send_async_nf(Session, Receiver, Cb)
+                               end),
+                ct:pal("Sent off ~B notifications", [NumToSend]),
+                Pending = lists:foldl(
+                            fun(#nf_info{}=NFI, Acc) ->
+                                    dict:store(NFI#nf_info.uuid, NFI, Acc)
+                            end, dict:new(), L),
+                %%% FIXME Start
+                ct:pal("FIXME: ***NOT*** Forcing reconnect of session ~p", [Name]),
+                ok = apns_erlv3_session:reconnect(Name),
+                %%% FIXME: Why doesn't this work when not commented out?
+                %%% FIXME End
+                %%% -----------------------------------------------------
+                % Wait for all the responses or die
+                ct:pal("Waiting for pending responses from ~p", [Name]),
+                wait_pending_responses(Pending, Receiver),
+                ct:pal("Got pending responses from ~p", [Name]),
+                % Stop receiver (probably not really necessary, but ok)
+                Receiver ! {self(), stop},
+                receive
+                    {Receiver, {exit, _Dict}} -> ok
+                after
+                    500 -> ok
+                end
+        end,
+    for_all_sessions(F, ?sessions(Config)).
+
 %%====================================================================
 %% Internal helper functions
 %%====================================================================
@@ -713,12 +769,17 @@ end_testcase(Case, Config, StopFun) when is_function(StopFun, 1) ->
 
 %%--------------------------------------------------------------------
 async_user_callback_fun() ->
+    async_user_callback_fun(do_log).
+
+async_user_callback_fun(LogEnabled) when LogEnabled == do_log orelse
+                                         LogEnabled == dont_log ->
     fun(NfPL, Req, Resp) ->
             case value(from, NfPL) of
                 Caller when is_pid(Caller) ->
                     UUIDStr = value(uuid, NfPL),
-                    ct:pal("Invoke callback for UUIDStr ~s, caller ~p",
-                           [UUIDStr, Caller]),
+                    _ = (LogEnabled == do_log) andalso
+                        ct:pal("Invoke callback for UUIDStr ~s, caller ~p",
+                               [UUIDStr, Caller]),
                     Caller ! {user_defined_cb, #{uuid => UUIDStr,
                                                  nf => NfPL,
                                                  req => Req,
@@ -754,3 +815,78 @@ set_mnesia_dir(DataDir) ->
 wait_until_session_in_connected_state(Session) ->
     Pid = erlang:whereis(?name(Session)),
     apns_erlv3_test_support:wait_for_connected(Pid, 5000).
+
+%%--------------------------------------------------------------------
+wait_pending_responses(PendingDict, Receiver) ->
+    receive
+        {Receiver, {exit, ReceivedDict}} ->
+            PSet = ordsets:from_list(dict:fetch_keys(PendingDict)),
+            RSet = ordsets:from_list(dict:fetch_keys(ReceivedDict)),
+            case ordsets:to_list(ordsets:subtract(PSet, RSet)) of
+                [] ->
+                    ct:pal("All pending responses received!");
+                Keys ->
+                    Missing = [dict:fetch(K, PendingDict) || K <- Keys],
+                    ct:pal("Missing responses:\n~p", [Missing]),
+                    ct:fail(missing_responses)
+            end
+    after
+        10000 ->
+            ct:fail({timeout, wait_pending_responses})
+    end.
+
+
+%%--------------------------------------------------------------------
+send_async_nf(Session, Receiver, Cb) ->
+    Name = ?name(Session),
+    UUIDStr = gen_uuid(),
+    Token = sc_util:to_bin(rand_push_tok()),
+    Nf = [{alert, <<"Testing async_flood_and_disconnect">>},
+          {uuid, UUIDStr},
+          {token, Token},
+          {topic, <<"com.example.FakeApp.voip">>}
+         ],
+
+    Opts = [{from_pid, Receiver}, {callback, Cb}],
+    Result = sc_push_svc_apnsv3:async_send(Name, Nf, Opts),
+    {ok, {submitted, _RUUID}} = Result,
+    #nf_info{session_name = Name,
+             token = Token,
+             uuid = UUIDStr}.
+
+%%--------------------------------------------------------------------
+async_flood_receiver(ExpectedCount, ParentPid) when is_pid(ParentPid) ->
+    ParentPid ! {self(), started},
+    async_flood_receiver(ExpectedCount, ParentPid, dict:new()).
+
+async_flood_receiver(0, ParentPid, Dict) when is_pid(ParentPid) ->
+    ParentPid ! {self(), {exit, Dict}};
+async_flood_receiver(Count, ParentPid, Dict) when Count > 0 andalso
+                                                  is_pid(ParentPid) ->
+    receive
+        {user_defined_cb, #{uuid := UUIDStr, resp := Resp}} ->
+            UUID = str_to_uuid(UUIDStr),
+            {ok, {UUID, ParsedResponse}} = Resp,
+            check_parsed_resp(ParsedResponse, success),
+            async_flood_receiver(Count - 1, ParentPid,
+                                 dict:store(UUIDStr, ParsedResponse, Dict));
+        {ParentPid, stop} ->
+            ParentPid ! {self(), {exit, Dict}};
+        Msg ->
+            ct:fail("async_flood_receiver, unexpected message: ~p", [Msg])
+    after
+        1000 ->
+            ct:pal("Received ~B responses so far, ~B left",
+                   [dict:size(Dict), Count]),
+            async_flood_receiver(Count, ParentPid, Dict)
+    end.
+
+%%--------------------------------------------------------------------
+do_n_times(Count, Fun) ->
+    do_n_times(Count, Fun, []).
+
+do_n_times(Count, Fun, Acc) when Count > 0 ->
+    do_n_times(Count - 1, Fun, [Fun()|Acc]);
+do_n_times(0, _Fun, Acc) ->
+    lists:reverse(Acc).
+

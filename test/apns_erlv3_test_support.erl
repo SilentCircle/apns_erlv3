@@ -88,10 +88,10 @@ check_status(ActualStatus, CheckFun) when is_function(CheckFun, 1) ->
     CheckFun(ActualStatus);
 check_status(ActualStatus, ExpStatus) ->
     case ExpStatus of
-        any     ->  ok;
-        success -> ?assertEqual(ActualStatus, <<"200">>);
-        failure -> ?assertNotEqual(ActualStatus, <<"200">>);
-        _       -> ?assertEqual(ActualStatus, ExpStatus)
+        any     -> ok;
+        success -> ?assertEqual(<<"200">>, ActualStatus);
+        failure -> ?assertNotEqual(<<"200">>, ActualStatus);
+        _       -> ?assertEqual(ExpStatus, ActualStatus)
     end.
 
 %%--------------------------------------------------------------------
