@@ -4,7 +4,7 @@
 -include("apns_erlv3_defs.hrl").
 
 -export([
-         add_props/2,
+         set_props/2,
          check_parsed_resp/2,
          end_group/1,
          fix_all_cert_paths/2,
@@ -57,8 +57,8 @@
 %%====================================================================
 %% API
 %%====================================================================
-add_props(FromProps, ToProps) ->
-    lists:foldl(fun(KV, Acc) -> add_prop(KV, Acc) end, ToProps, FromProps).
+set_props(FromProps, ToProps) ->
+    lists:foldl(fun(KV, Acc) -> set_prop(KV, Acc) end, ToProps, FromProps).
 
 %%--------------------------------------------------------------------
 check_parsed_resp(ParsedResp, ExpStatus) ->
@@ -118,7 +118,7 @@ fix_simulator_cert_paths(DataDir, SimConfig) ->
     SslOptsKey = ssl_options,
     SslOpts0 = value(SslOptsKey, SimConfig),
     SslOpts = fix_ssl_opts(SslOpts0, DataDir),
-    replace_kv(SslOptsKey, SslOpts, SimConfig).
+    set_prop({SslOptsKey, SslOpts}, SimConfig).
 
 %%--------------------------------------------------------------------
 for_all_sessions(Fun, Sessions) when is_function(Fun, 1), is_list(Sessions) ->
@@ -137,11 +137,11 @@ make_aps_props(Alert) ->
 
 %%--------------------------------------------------------------------
 make_aps_props(Alert, Badge) when is_integer(Badge) ->
-    add_prop({badge, Badge}, make_aps_props(Alert)).
+    set_prop({badge, Badge}, make_aps_props(Alert)).
 
 %%--------------------------------------------------------------------
 make_aps_props(Alert, Badge, Sound) when is_integer(Badge) ->
-    add_prop(to_bin_prop(sound, Sound), make_aps_props(Alert, Badge)).
+    set_prop(to_bin_prop(sound, Sound), make_aps_props(Alert, Badge)).
 
 %%--------------------------------------------------------------------
 make_sim_notification(Notification, SimCfg) ->
@@ -219,7 +219,7 @@ start_group(SessionStarter, Config) ->
     {ok, SessSupPid} = SessionStarter(),
     ct:pal("Started session sup with pid ~p", [SessSupPid]),
     unlink(SessSupPid),
-    add_prop({sess_sup_pid, SessSupPid}, Config).
+    set_prop({sess_sup_pid, SessSupPid}, Config).
 
 %%--------------------------------------------------------------------
 start_session(Opts, StartFun) when is_list(Opts),
@@ -257,8 +257,10 @@ stop_session(SessCfg, StartedSessions, StopFun) when is_list(SessCfg),
                            [Pid, Reason]),
                     ok
             after 2000 ->
-                      erlang:demonitor(Ref),
-                      {error, timeout}
+                      safe_demonitor(Ref),
+                      erlang:exit(Pid, kill),
+                      ct:pal("Had to kill pid ~p because it timed out", [Pid]),
+                      ok
             end
     end.
 
@@ -422,9 +424,7 @@ get_saved_value(K, Config, Def) ->
 fix_cert_paths({ConfigKey, SslOptsKey}, DataDir, Session) ->
     Config = value(ConfigKey, Session),
     SslOpts = fix_ssl_opts(value(SslOptsKey, Config), DataDir),
-    replace_kv(ConfigKey,
-               replace_kv(SslOptsKey, SslOpts, Config),
-               Session).
+    set_prop({ConfigKey, set_prop({SslOptsKey, SslOpts}, Config)}, Session).
 
 
 %%--------------------------------------------------------------------
@@ -452,11 +452,7 @@ fix_opt_kv(Key, PL, DataDir) ->
     end.
 
 %%--------------------------------------------------------------------
-replace_kv(Key, Val, PL) ->
-    [{Key, Val} | delete_key(Key, PL)].
-
-%%--------------------------------------------------------------------
-add_prop({K, _V} = KV, Props) ->
+set_prop({K, _V} = KV, Props) ->
     lists:keystore(K, 1, Props, KV).
 
 %%--------------------------------------------------------------------
@@ -745,4 +741,10 @@ sim_nf_fun(#{} = Map, #{reason := Reason} = SimMap) ->
 %%--------------------------------------------------------------------
 uuid_to_str(<<_:128>> = UUID) ->
     uuid:uuid_to_string(UUID, binary_standard).
+
+%%--------------------------------------------------------------------
+safe_demonitor(undefined) ->
+    ok;
+safe_demonitor(Ref) when is_reference(Ref) ->
+    erlang:demonitor(Ref).
 

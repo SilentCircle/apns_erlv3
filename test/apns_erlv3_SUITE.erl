@@ -10,15 +10,15 @@
 -compile({parse_transform, test_generator}).
 
 -import(apns_erlv3_test_support,
-        [add_props/2, check_parsed_resp/2, end_group/1, fix_all_cert_paths/2,
-         format_str/2, format_bin/2, bin_prop/2, rand_push_tok/0, gen_uuid/0,
-         make_nf/1, make_nf/2, make_api_nf/2,
+        [set_props/2, set_prop/2, check_parsed_resp/2, end_group/1,
+         fix_all_cert_paths/2, format_str/2, format_bin/2, bin_prop/2,
+         rand_push_tok/0, gen_uuid/0, make_nf/1, make_nf/2, make_api_nf/2,
          maybe_prop/2, maybe_plist/2, plist/3, send_fun/4, send_fun_nf/4,
-         gen_send_fun/4, send_funs/2,
-         check_match/2, sim_nf_fun/2, fix_simulator_cert_paths/2,
-         for_all_sessions/2, is_uuid/1, reason_list/0, start_group/2,
-         start_session/2, start_simulator/4, stop_session/3, str_to_uuid/1,
-         to_bin_prop/2, value/2, wait_until_sim_active/1]).
+         gen_send_fun/4, send_funs/2, check_match/2, sim_nf_fun/2,
+         fix_simulator_cert_paths/2, for_all_sessions/2, is_uuid/1,
+         reason_list/0, start_group/2, start_session/2, start_simulator/4,
+         stop_session/3, str_to_uuid/1, to_bin_prop/2, value/2,
+         wait_until_sim_active/1]).
 
 %% These tests are expanded using test_generator.erl's
 %% parse transform into tests for sync & async, session & api
@@ -183,13 +183,21 @@ init_per_group(pre_started_session, Config) ->
     Sessions = ?sessions(Config),
     SessionStarter = fun() -> apns_erlv3_session_sup:start_link(Sessions) end,
     start_group(SessionStarter, Config);
-init_per_group(_GroupName, Config) ->
+init_per_group(recovery_under_stress, Config) ->
+    Sessions = fix_sessions(?sessions(Config), [{flush_strategy, on_reconnect},
+                                                {requeue_strategy, always}]),
+    ct:pal("Fixed sessions:\n~p", [Sessions]),
+    SessionStarter = fun() -> apns_erlv3_session_sup:start_link(Sessions) end,
+    start_group(SessionStarter, Config);
+init_per_group(GroupName, Config) ->
+    ct:pal("Group Name: ~p", [GroupName]),
     SessionStarter = fun() -> apns_erlv3_session_sup:start_link([]) end,
     start_group(SessionStarter, Config).
 
-
 %%--------------------------------------------------------------------
 end_per_group(pre_started_session, Config) ->
+    Config;
+end_per_group(recovery_under_stress, Config) ->
     Config;
 end_per_group(_GroupName, Config) ->
     end_group(Config).
@@ -685,11 +693,8 @@ async_flood_and_disconnect(Config) ->
                 Name = ?name(Session),
                 % Start a receiver process to collect the responses
                 ct:pal("Spawning receiver process..."),
-                Receiver = spawn(?MODULE, async_flood_receiver,
-                                 [NumToSend, Self]),
-                receive
-                    {Receiver, started} -> ok
-                end,
+                {ok, Receiver} = p_spawn(?MODULE, async_flood_receiver,
+                                         [NumToSend, Self]),
                 ct:pal("Spawned receiver process ~p", [Receiver]),
                 % Send off all the notifications asynchronously
                 L = do_n_times(NumToSend,
@@ -701,23 +706,19 @@ async_flood_and_disconnect(Config) ->
                             fun(#nf_info{}=NFI, Acc) ->
                                     dict:store(NFI#nf_info.uuid, NFI, Acc)
                             end, dict:new(), L),
-                %%% FIXME Start
-                ct:pal("FIXME: ***NOT*** Forcing reconnect of session ~p", [Name]),
+                ct:pal("Pausing to let some responses start coming back"),
+                wait_until(fun(Pid) -> {ok, Count} = p_call(Pid, count),
+                                       Count >= NumToSend div 2
+                           end, Receiver),
+                ct:pal("Disconnecting and reconnecting session now"),
                 ok = apns_erlv3_session:reconnect(Name),
-                %%% FIXME: Why doesn't this work when not commented out?
-                %%% FIXME End
-                %%% -----------------------------------------------------
+                ct:pal("Reconnected session ~p", [Name]),
                 % Wait for all the responses or die
                 ct:pal("Waiting for pending responses from ~p", [Name]),
                 wait_pending_responses(Pending, Receiver),
                 ct:pal("Got pending responses from ~p", [Name]),
                 % Stop receiver (probably not really necessary, but ok)
-                Receiver ! {self(), stop},
-                receive
-                    {Receiver, {exit, _Dict}} -> ok
-                after
-                    500 -> ok
-                end
+                p_call(Receiver, stop)
         end,
     for_all_sessions(F, ?sessions(Config)).
 
@@ -734,6 +735,8 @@ init_testcase(Case, Config, StartFun) when is_function(StartFun, 2) ->
     lager_common_test_backend:bounce(Level),
     DataDir = ?config(data_dir, Config),
     ct:pal("~p: Data directory is ~s", [Case, DataDir]),
+    mnesia:stop(),
+    mnesia:delete_schema([node()]),
     ok = mnesia:create_schema([node()]),
     ok = mnesia:start(),
     ok = sc_push_reg_api:init(),
@@ -749,7 +752,7 @@ init_testcase(Case, Config, StartFun) when is_function(StartFun, 2) ->
                    throw:Reason ->
                        ct:fail(Reason)
                end,
-    add_props([{started_sessions, Sessions}], Config).
+    set_props([{started_sessions, Sessions}], Config).
 
 %%--------------------------------------------------------------------
 -spec end_testcase(Case, Config, StopFun) -> Result when
@@ -771,13 +774,14 @@ end_testcase(Case, Config, StopFun) when is_function(StopFun, 1) ->
 async_user_callback_fun() ->
     async_user_callback_fun(do_log).
 
-async_user_callback_fun(LogEnabled) when LogEnabled == do_log orelse
-                                         LogEnabled == dont_log ->
+%%--------------------------------------------------------------------
+async_user_callback_fun(LogDisposition) when LogDisposition == do_log orelse
+                                             LogDisposition == dont_log ->
     fun(NfPL, Req, Resp) ->
             case value(from, NfPL) of
                 Caller when is_pid(Caller) ->
                     UUIDStr = value(uuid, NfPL),
-                    _ = (LogEnabled == do_log) andalso
+                    _ = (LogDisposition == do_log) andalso
                         ct:pal("Invoke callback for UUIDStr ~s, caller ~p",
                                [UUIDStr, Caller]),
                     Caller ! {user_defined_cb, #{uuid => UUIDStr,
@@ -787,7 +791,9 @@ async_user_callback_fun(LogEnabled) when LogEnabled == do_log orelse
                     ok;
                 undefined ->
                     ct:fail("Cannot send result, no caller info: ~p",
-                            [NfPL])
+                            [NfPL]);
+                _Unknown ->
+                    ct:fail("Unhandled 'from' value in ~p", [NfPL])
             end
     end.
 
@@ -801,8 +807,9 @@ async_receive_user_cb(UUIDStr) ->
             check_parsed_resp(ParsedResponse, success);
         Msg ->
             ct:fail("async_receive_user_cb got unexpected message: ~p", [Msg])
-    after 1000 ->
-              ct:fail({error, timeout})
+    after
+        1000 ->
+            ct:fail({error, timeout})
     end.
 
 %%--------------------------------------------------------------------
@@ -837,7 +844,7 @@ wait_pending_responses(PendingDict, Receiver) ->
 
 
 %%--------------------------------------------------------------------
-send_async_nf(Session, Receiver, Cb) ->
+send_async_nf(Session, Receiver, Cb) when is_pid(Receiver) ->
     Name = ?name(Session),
     UUIDStr = gen_uuid(),
     Token = sc_util:to_bin(rand_push_tok()),
@@ -855,12 +862,41 @@ send_async_nf(Session, Receiver, Cb) ->
              uuid = UUIDStr}.
 
 %%--------------------------------------------------------------------
+p_spawn(M, F, A) ->
+    Pid = spawn(M, F, A),
+    receive
+        {Pid, started} ->
+            {ok, Pid}
+    after
+        5000 ->
+            {error, timeout}
+    end.
+
+%%--------------------------------------------------------------------
+p_call(Pid, Op) when is_pid(Pid) ->
+    Pid ! {self(), Op},
+    receive
+        {Pid, Resp} ->
+            {ok, Resp}
+    after
+        100 ->
+            {error, timeout}
+    end.
+
+%%--------------------------------------------------------------------
+p_reply(Pid, Reply) when is_pid(Pid) ->
+    Pid ! {self(), Reply}.
+
+%%--------------------------------------------------------------------
 async_flood_receiver(ExpectedCount, ParentPid) when is_pid(ParentPid) ->
-    ParentPid ! {self(), started},
-    async_flood_receiver(ExpectedCount, ParentPid, dict:new()).
+    p_reply(ParentPid, started),
+    async_flood_receiver(ExpectedCount, ParentPid, dict:new());
+async_flood_receiver(ExpectedCount, ParentPid) ->
+    ct:pal("Invalid parameters, ExpectedCount=~p, ParentPid=~p",
+           [ExpectedCount, ParentPid]).
 
 async_flood_receiver(0, ParentPid, Dict) when is_pid(ParentPid) ->
-    ParentPid ! {self(), {exit, Dict}};
+    p_reply(ParentPid, {exit, Dict});
 async_flood_receiver(Count, ParentPid, Dict) when Count > 0 andalso
                                                   is_pid(ParentPid) ->
     receive
@@ -871,7 +907,10 @@ async_flood_receiver(Count, ParentPid, Dict) when Count > 0 andalso
             async_flood_receiver(Count - 1, ParentPid,
                                  dict:store(UUIDStr, ParsedResponse, Dict));
         {ParentPid, stop} ->
-            ParentPid ! {self(), {exit, Dict}};
+            p_reply(ParentPid, {exit, Dict});
+        {ParentPid, count} ->
+            p_reply(ParentPid, {count, dict:size(Dict)}),
+            async_flood_receiver(Count, ParentPid, Dict);
         Msg ->
             ct:fail("async_flood_receiver, unexpected message: ~p", [Msg])
     after
@@ -879,7 +918,10 @@ async_flood_receiver(Count, ParentPid, Dict) when Count > 0 andalso
             ct:pal("Received ~B responses so far, ~B left",
                    [dict:size(Dict), Count]),
             async_flood_receiver(Count, ParentPid, Dict)
-    end.
+    end;
+async_flood_receiver(Count, ParentPid, Dict) ->
+    ct:fail("Invalid parameters, Count=~p, ParentPid=~p, Dict=~p",
+            [Count, ParentPid, Dict]).
 
 %%--------------------------------------------------------------------
 do_n_times(Count, Fun) ->
@@ -890,3 +932,28 @@ do_n_times(Count, Fun, Acc) when Count > 0 ->
 do_n_times(0, _Fun, Acc) ->
     lists:reverse(Acc).
 
+%%--------------------------------------------------------------------
+fix_sessions(Sessions, PropsToChange) ->
+    [set_session_cfg(Session, PropsToChange) || Session <- Sessions].
+
+%%--------------------------------------------------------------------
+set_session_cfg(Session, PropList) ->
+    SessCfg = set_props(?cfg(Session), PropList),
+    set_prop({config, SessCfg}, Session).
+
+%%--------------------------------------------------------------------
+sleep(Ms) ->
+    receive
+    after
+        Ms -> ok
+    end.
+
+%%--------------------------------------------------------------------
+wait_until(Pred, Args) when is_function(Pred, 1) ->
+    case Pred(Args) of
+        false ->
+            sleep(5),
+            wait_until(Pred, Args);
+        true ->
+            ok
+    end.

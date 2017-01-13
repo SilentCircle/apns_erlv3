@@ -30,6 +30,7 @@
 
 -define(name(Session), apns_erlv3_test_support:value(name, Session)).
 -define(token(Session), apns_erlv3_test_support:bin_prop(token, Session)).
+-define(cfg(Session), apns_erlv3_test_support:value(config, Session)).
 
 -define(sessions(Config), apns_erlv3_test_support:value(sessions, Config)).
 
