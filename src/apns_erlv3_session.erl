@@ -1298,8 +1298,10 @@ transition(disconnecting, connecting,    State) -> State.
 
 %% @private
 enter(connecting, State) ->
-    % Trigger the connection after an exponential delay.
-    schedule_reconnect(State);
+    % Requeue all pending notifications that have not received
+    % a response.
+    % Then trigger the connection after an exponential delay.
+    schedule_reconnect(requeue_pending_nfs(State));
 
 enter(connected, State) ->
     % Send a ping immediately to force any connection errors
@@ -1670,20 +1672,42 @@ queue_length(State) ->
 
 %%--------------------------------------------------------------------
 %% @private
-queue_nf(Nf, #?S{queue = Queue} = State) ->
+queue_nf(#nf{}=Nf, #?S{queue = Queue} = State) ->
     State#?S{queue = queue:in(Nf, Queue)}.
 
 
 %%--------------------------------------------------------------------
 %% @private
-requeue_notification(Nf, #?S{queue = Queue,
-                             requeue_strategy = always} = State) ->
+requeue_notification(#nf{}=Nf, #?S{queue = Queue,
+                                   requeue_strategy = always} = State) ->
     State#?S{queue = queue:in_r(Nf, Queue)};
-requeue_notification(Nf, #?S{requeue_strategy = debug_never} = State) ->
+requeue_notification(#nf{}=Nf, #?S{requeue_strategy = debug_never} = State) ->
     ?LOG_WARNING("*** requeue_strategy = debug_never, not requeuing:\n~p",
                  [Nf]),
     State.
 
+%%--------------------------------------------------------------------
+%% @private
+%% @doc Take all currently queued notifications, and all pending
+%% notifications in the request store, sort them by timestamp
+%% so that the oldest one is at the top of the list, and
+%% replace the queue with this list.
+
+requeue_pending_nfs(#?S{queue=Queue, req_store=ReqStore,
+                        requeue_strategy=always}=State) ->
+    OldestFirst = fun(#apns_erlv3_req{last_mod_time=LmtL},
+                      #apns_erlv3_req{last_mod_time=LmtR}) ->
+                          LmtL > LmtR
+                  end,
+    Nfs = [#nf{} = Req#apns_erlv3_req.nf ||
+           Req <- lists:sort(OldestFirst, req_remove_all_reqs(ReqStore))],
+    State#?S{queue=queue:join(Queue, queue:from_list(Nfs))};
+requeue_pending_nfs(#?S{req_store=ReqStore,
+                        requeue_strategy=debug_never}=State) ->
+    ?LOG_WARNING("*** requeue_strategy = debug_never, discarding pending nfs",
+                 []),
+    req_delete_all_reqs(ReqStore),
+    State.
 
 %%% --------------------------------------------------------------------------
 %%% Reconnection Delay Functions
@@ -1769,7 +1793,7 @@ apns_disconnect(Http2Client) when is_pid(Http2Client) ->
 -spec apns_send(Nf, State) -> {Resp, NewState}
     when Nf :: nf(), State :: state(), NewState :: state(),
          Resp :: {ok, StreamId} | {error, term()}, StreamId :: term().
-apns_send(Nf, State) ->
+apns_send(#nf{}=Nf, State) ->
     {Opts, NewState} = make_opts(Nf, State),
     Req = apns_lib_http2:make_req(Nf#nf.token, Nf#nf.json, Opts),
     Resp = case send_impl(NewState#?S.http2_pid, Req) of
@@ -2470,11 +2494,10 @@ req_lookup(Tab, Id) ->
 %%--------------------------------------------------------------------
 %% @private
 req_remove(Tab, Id) ->
-    case req_lookup(Tab, Id) of
-        undefined ->
+    case ets:take(Tab, Id) of
+        [] ->
             undefined;
-        Req ->
-            true = ets:delete(Tab, Id),
+        [Req] ->
             Req
     end.
 
@@ -2482,6 +2505,18 @@ req_remove(Tab, Id) ->
 %% @private
 req_count(Tab) ->
     ets:info(Tab, size).
+
+%%--------------------------------------------------------------------
+%% @private
+req_remove_all_reqs(Tab) ->
+    L = ets:tab2list(Tab),
+    req_delete_all_reqs(Tab),
+    L.
+
+%%--------------------------------------------------------------------
+%% @private
+req_delete_all_reqs(Tab) ->
+    true = ets:delete_all_objects(Tab).
 
 %%--------------------------------------------------------------------
 %% @private
