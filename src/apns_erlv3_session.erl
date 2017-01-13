@@ -377,7 +377,7 @@
          host               = ""                         :: string(),
          port               = ?DEFAULT_APNS_PORT         :: non_neg_integer(),
          app_id_suffix      = <<>>                       :: binary(),
-         apns_auth          = <<>>                       :: binary(), % current JWT
+         apns_auth          = undefined                  :: undefined | binary(), % current JWT
          apns_env           = undefined                  :: prod | dev,
          apns_topic         = <<>>                       :: undefined | binary(),
          jwt_ctx            = undefined                  :: undefined | jwt_ctx(),
@@ -2207,6 +2207,7 @@ check_status(ParsedResp) ->
               | invalid_jwt
               | internal_server_error
               | broken_session
+              | unregistered_token
               | error.
 check_fail_status(ParsedResp) ->
     case pv_req(reason, ParsedResp) of
