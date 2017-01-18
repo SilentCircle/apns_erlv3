@@ -1,10 +1,11 @@
+{"1.1.0",
 [{<<"apns_erl_util">>,
   {git,"git@github.com:SilentCircle/apns_erl_util.git",
        {ref,"1c906b9e9713c7f2a77d7a47c873ce1d739af20d"}},
   0},
  {<<"chatterbox">>,
   {git,"https://github.com/joedevivo/chatterbox.git",
-       {ref,"d59b541cdc8d4e27cb4958769ef65ac345ab9e25"}},
+       {ref,"adb3474dbf7c90998d9316e9bd9caf8c0be5ae33"}},
   0},
  {<<"edown">>,
   {git,"https://github.com/uwiger/edown.git",
@@ -14,10 +15,7 @@
   {git,"git://github.com/DeadZen/goldrush.git",
        {ref,"212299233c7e7eb63a97be2777e1c05ebaa58dbe"}},
   1},
- {<<"hpack">>,
-  {git,"git://github.com/joedevivo/hpack.git",
-       {ref,"2880ff4e88df18a31728893afc6746dcab1acf79"}},
-  1},
+ {<<"hpack">>,{pkg,<<"hpack_erl">>,<<"0.2.3">>},1},
  {<<"jsx">>,
   {git,"https://github.com/talentdeficit/jsx.git",
        {ref,"3074d4865b3385a050badf7828ad31490d860df5"}},
@@ -45,4 +43,8 @@
  {<<"uuid">>,
   {git,"https://github.com/okeuday/uuid.git",
        {ref,"06eca0bd373e97f5d7eda4f8df0621d3903754ef"}},
-  0}].
+  0}]}.
+[
+{pkg_hash,[
+ {<<"hpack">>, <<"17670F83FF984AE6CD74B1C456EDDE906D27FF013740EE4D9EFAA4F1BF999633">>}]}
+].
