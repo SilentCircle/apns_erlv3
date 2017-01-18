@@ -4,7 +4,16 @@
 
 {node, ct1, '{{NEEDFULLNODENAME}}'}.
 {config, ["test/test.config"]}.
-{suites, "./test", all}.
-{cover, all_nodes, "./cover.spec"}.
+{groups, "test/", apns_erlv3_SUITE,
+ [
+  session_control,
+  code_coverage,
+  debug_functions,
+  positive_send_notification_tests,
+  negative_send_notification_tests,
+  quiesce_and_resume,
+  recovery_under_stress
+ ]}.
+%{cover, all_nodes, "test/cover.spec"}.
 
 %% ex: ft=erlang ts=4 sts=4 sw=4 et:

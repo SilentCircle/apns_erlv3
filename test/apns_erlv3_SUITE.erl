@@ -17,7 +17,7 @@
          gen_send_fun/4, send_funs/2, check_match/2, sim_nf_fun/2,
          fix_simulator_cert_paths/2, for_all_sessions/2, is_uuid/1,
          reason_list/0, start_group/2, start_session/2, start_simulator/4,
-         stop_session/3, str_to_uuid/1, to_bin_prop/2, value/2,
+         stop_session/3, str_to_uuid/1, to_bin_prop/2, value/2, value/3,
          wait_until_sim_active/1]).
 
 %% These tests are expanded using test_generator.erl's
@@ -118,6 +118,8 @@ init_per_suite(Config) ->
     ct:pal("Entering init_per_suite; config: ~p", [Config]),
     ct:pal("My Erlang node name is ~p", [node()]),
 
+    ok = ct:require(test_mode),
+    ok = ct:require(flood_test_messages),
     ok = ct:require(sessions),
     ok = ct:require(simulator_config),
     ok = ct:require(simulator_logging),
@@ -129,6 +131,13 @@ init_per_suite(Config) ->
     application:load(lager),
     [application:set_env(lager, Key, Val) || {Key, Val} <- ct:get_config(lager)],
     lager:start(),
+
+    TestMode = ct:get_config(test_mode),
+    ?assert(TestMode == http orelse TestMode == https),
+
+    FloodTestMessages = ct:get_config(flood_test_messages),
+    ct:pal("flood_test_messages = ~p", [FloodTestMessages ]),
+    ?assert(is_integer(FloodTestMessages) andalso FloodTestMessages > 0),
 
     % ct:get_config(sessions) -> [Session].
     DataDir = ?config(data_dir, Config),
@@ -142,7 +151,13 @@ init_per_suite(Config) ->
     true = is_list(Sessions0),
     ct:pal("Raw sessions: ~p", [Sessions0]),
 
-    Sessions = fix_all_cert_paths(DataDir, Sessions0),
+    Sessions = case TestMode of
+                   https ->
+                       Fixed = fix_all_cert_paths(DataDir, Sessions0),
+                       set_session_protocols(h2, Fixed);
+                   http ->
+                       set_session_protocols(h2c, Sessions0)
+               end,
     ct:pal("Adjusted sessions: ~p", [Sessions]),
 
     SimNode = ct:get_config(sim_node_name),
@@ -150,12 +165,30 @@ init_per_suite(Config) ->
     SimConfig0 = ct:get_config(simulator_config),
     ct:pal("Raw sim cfg: ~p", [SimConfig0]),
 
-    SimConfig = fix_simulator_cert_paths(DataDir, SimConfig0),
+    SimConfig = case TestMode of
+                    https ->
+                        set_prop({ssl, true},
+                                 fix_simulator_cert_paths(DataDir,
+                                                          SimConfig0));
+                    http ->
+                        SimSslOpts = lists:filter(
+                                       fun({K, _}) ->
+                                               lists:member(K, [ip, port])
+                                       end, value(ssl_opts, SimConfig0, [])
+                                      ),
+                        set_props([{ssl, false},
+                                   {ssl_opts, SimSslOpts}], SimConfig0)
+                end,
 
-    ValidCertCfg0 = ct:get_config(valid_cert),
-    ct:pal("Raw valid cert config: ~p", [ValidCertCfg0]),
-
-    [ValidCertCfg] = fix_all_cert_paths(DataDir, [ValidCertCfg0]),
+    ValidCertCfg = case TestMode of
+                       https ->
+                           ValidCertCfg0 = ct:get_config(valid_cert),
+                           ct:pal("Raw valid cert config: ~p", [ValidCertCfg0]),
+                           [VCC] = fix_all_cert_paths(DataDir, [ValidCertCfg0]),
+                           VCC;
+                       http ->
+                           []
+                   end,
     ct:pal("Adjusted cert config: ~p", [ValidCertCfg]),
 
     LagerEnv = ct:get_config(simulator_logging),
@@ -167,7 +200,9 @@ init_per_suite(Config) ->
     wait_until_sim_active(SimConfig),
 
     LagerCTBackend = ct:get_config(lager_common_test_backend),
-    Config ++ [{sessions, Sessions},
+    Config ++ [{test_mode, TestMode},
+               {flood_test_messages, FloodTestMessages},
+               {sessions, Sessions},
                {sim_node_name, SimNode},
                {simulator_config, SimConfig},
                {sim_started_apps, StartedApps},
@@ -407,11 +442,16 @@ validation_tests(Config) ->
 %%--------------------------------------------------------------------
 cert_validation_test(doc) -> ["Exercise cert validation"];
 cert_validation_test(Config) ->
-    ct:pal("Test startup with valid push certs~n"),
-    ValidCertCfg = value(valid_cert, Config),
-    {ok, {Pid, _Ref}} = start_session(ValidCertCfg,
-                                      fun apns_erlv3_session:start/2),
-    apns_erlv3_session:stop(Pid).
+    case value(test_mode, Config) of
+        https ->
+            ct:pal("Test startup with valid push certs~n"),
+            ValidCertCfg = value(valid_cert, Config),
+            {ok, {Pid, _Ref}} = start_session(ValidCertCfg,
+                                              fun apns_erlv3_session:start/2),
+            apns_erlv3_session:stop(Pid);
+        http ->
+            {skip, {test_mode, http}}
+    end.
 
 %%--------------------------------------------------------------------
 %% Tests that will be parse transformed
@@ -686,36 +726,35 @@ async_flood_and_disconnect(doc) ->
     ["Test recovery from disconnect while many async notifications"
      "are in progress"];
 async_flood_and_disconnect(Config) ->
+    NumToSend = value(flood_test_messages, Config),
     Self = self(),
     Cb = async_user_callback_fun(dont_log),
-    NumToSend = 200,
     F = fun(Session) ->
                 Name = ?name(Session),
                 % Start a receiver process to collect the responses
                 ct:pal("Spawning receiver process..."),
-                {ok, Receiver} = p_spawn(?MODULE, async_flood_receiver,
-                                         [NumToSend, Self]),
+                {ok, {Receiver, MonRef}} = p_spawn(?MODULE,
+                                                   async_flood_receiver,
+                                                   [NumToSend, Self]),
                 ct:pal("Spawned receiver process ~p", [Receiver]),
                 % Send off all the notifications asynchronously
                 L = do_n_times(NumToSend,
-                               fun() ->
-                                       send_async_nf(Session, Receiver, Cb)
+                               fun(I) ->
+                                       send_async_nf(I, Session, Receiver, Cb)
                                end),
                 ct:pal("Sent off ~B notifications", [NumToSend]),
                 Pending = lists:foldl(
                             fun(#nf_info{}=NFI, Acc) ->
                                     dict:store(NFI#nf_info.uuid, NFI, Acc)
                             end, dict:new(), L),
-                ct:pal("Pausing to let some responses start coming back"),
-                wait_until(fun(Pid) -> {ok, Count} = p_call(Pid, count),
-                                       Count >= NumToSend div 2
-                           end, Receiver),
+                ct:pal("Pausing until first response received"),
+                receive {Receiver, got_first_response} -> ok end,
                 ct:pal("Disconnecting and reconnecting session now"),
                 ok = apns_erlv3_session:reconnect(Name),
                 ct:pal("Reconnected session ~p", [Name]),
                 % Wait for all the responses or die
                 ct:pal("Waiting for pending responses from ~p", [Name]),
-                wait_pending_responses(Pending, Receiver),
+                wait_pending_responses(Pending, Receiver, MonRef),
                 ct:pal("Got pending responses from ~p", [Name]),
                 % Stop receiver (probably not really necessary, but ok)
                 p_call(Receiver, stop)
@@ -824,7 +863,7 @@ wait_until_session_in_connected_state(Session) ->
     apns_erlv3_test_support:wait_for_connected(Pid, 5000).
 
 %%--------------------------------------------------------------------
-wait_pending_responses(PendingDict, Receiver) ->
+wait_pending_responses(PendingDict, Receiver, MonRef) ->
     receive
         {Receiver, {exit, ReceivedDict}} ->
             PSet = ordsets:from_list(dict:fetch_keys(PendingDict)),
@@ -836,7 +875,10 @@ wait_pending_responses(PendingDict, Receiver) ->
                     Missing = [dict:fetch(K, PendingDict) || K <- Keys],
                     ct:pal("Missing responses:\n~p", [Missing]),
                     ct:fail(missing_responses)
-            end
+            end;
+        {'DOWN', MonRef, Type, Receiver, Reason} ->
+            ct:fail("~p ~p crashed before completing, reason: ~p",
+                    [Type, Receiver, Reason])
     after
         10000 ->
             ct:fail({timeout, wait_pending_responses})
@@ -844,11 +886,13 @@ wait_pending_responses(PendingDict, Receiver) ->
 
 
 %%--------------------------------------------------------------------
-send_async_nf(Session, Receiver, Cb) when is_pid(Receiver) ->
+send_async_nf(I, Session, Receiver, Cb) when is_pid(Receiver) ->
     Name = ?name(Session),
     UUIDStr = gen_uuid(),
+    Alert = list_to_binary(io_lib:format("async_flood_and_disconnect #~4..0B",
+                                         [I])),
     Token = sc_util:to_bin(rand_push_tok()),
-    Nf = [{alert, <<"Testing async_flood_and_disconnect">>},
+    Nf = [{alert, Alert},
           {uuid, UUIDStr},
           {token, Token},
           {topic, <<"com.example.FakeApp.voip">>}
@@ -863,10 +907,10 @@ send_async_nf(Session, Receiver, Cb) when is_pid(Receiver) ->
 
 %%--------------------------------------------------------------------
 p_spawn(M, F, A) ->
-    Pid = spawn(M, F, A),
+    {Pid, Ref} = spawn_monitor(M, F, A),
     receive
         {Pid, started} ->
-            {ok, Pid}
+            {ok, {Pid, Ref}}
     after
         5000 ->
             {error, timeout}
@@ -887,54 +931,89 @@ p_call(Pid, Op) when is_pid(Pid) ->
 p_reply(Pid, Reply) when is_pid(Pid) ->
     Pid ! {self(), Reply}.
 
+-compile({inline, [p_reply/2]}).
+
 %%--------------------------------------------------------------------
 async_flood_receiver(ExpectedCount, ParentPid) when is_pid(ParentPid) ->
     p_reply(ParentPid, started),
-    async_flood_receiver(ExpectedCount, ParentPid, dict:new());
+    async_flood_receiver(ExpectedCount, ParentPid, dict:new(), 0);
 async_flood_receiver(ExpectedCount, ParentPid) ->
     ct:pal("Invalid parameters, ExpectedCount=~p, ParentPid=~p",
            [ExpectedCount, ParentPid]).
 
-async_flood_receiver(0, ParentPid, Dict) when is_pid(ParentPid) ->
+%%--------------------------------------------------------------------
+async_flood_receiver(0, ParentPid, Dict, _NR) when is_pid(ParentPid) ->
     p_reply(ParentPid, {exit, Dict});
-async_flood_receiver(Count, ParentPid, Dict) when Count > 0 andalso
-                                                  is_pid(ParentPid) ->
+async_flood_receiver(Count, ParentPid, Dict, NR) when Count > 0 andalso
+                                                      is_pid(ParentPid) ->
     receive
         {user_defined_cb, #{uuid := UUIDStr, resp := Resp}} ->
+            notify_first_response(ParentPid, NR),
             UUID = str_to_uuid(UUIDStr),
             {ok, {UUID, ParsedResponse}} = Resp,
-            check_parsed_resp(ParsedResponse, success),
-            async_flood_receiver(Count - 1, ParentPid,
-                                 dict:store(UUIDStr, ParsedResponse, Dict));
+            case value(status, ParsedResponse) of
+                <<"200">> ->
+                    async_flood_receiver(Count - 1, ParentPid,
+                                         dict:store(UUIDStr, ParsedResponse,
+                                                    Dict), NR + 1);
+                Other ->
+                    ct:fail("~p: bad response code ~s, ParsedResponse:\n~p",
+                            [async_flood_receiver, Other, ParsedResponse])
+            end;
         {ParentPid, stop} ->
             p_reply(ParentPid, {exit, Dict});
         {ParentPid, count} ->
             p_reply(ParentPid, {count, dict:size(Dict)}),
-            async_flood_receiver(Count, ParentPid, Dict);
+            async_flood_receiver(Count, ParentPid, Dict, NR);
         Msg ->
-            ct:fail("async_flood_receiver, unexpected message: ~p", [Msg])
+            ct:fail("~p: unexpected message: ~p", [async_flood_receiver, Msg])
     after
         1000 ->
-            ct:pal("Received ~B responses so far, ~B left",
-                   [dict:size(Dict), Count]),
-            async_flood_receiver(Count, ParentPid, Dict)
+            ct:pal("~p: ~B responses received so far, ~B left",
+                   [async_flood_receiver, NR, Count]),
+            async_flood_receiver(Count, ParentPid, Dict, NR)
     end;
-async_flood_receiver(Count, ParentPid, Dict) ->
-    ct:fail("Invalid parameters, Count=~p, ParentPid=~p, Dict=~p",
-            [Count, ParentPid, Dict]).
+async_flood_receiver(Count, ParentPid, Dict, NR) ->
+    ct:fail("~p: invalid parameters, Count=~p, ParentPid=~p, Dict=~p, NR=~p",
+            [async_flood_receiver, Count, ParentPid, Dict, NR]).
+
+%%--------------------------------------------------------------------
+notify_first_response(ParentPid, 0) ->
+    p_reply(ParentPid, got_first_response);
+notify_first_response(_ParentPid, _) ->
+    ok.
+
+-compile({inline, [notify_first_response/2]}).
 
 %%--------------------------------------------------------------------
 do_n_times(Count, Fun) ->
-    do_n_times(Count, Fun, []).
+    do_n_times(Count, Fun, [], 1).
 
-do_n_times(Count, Fun, Acc) when Count > 0 ->
-    do_n_times(Count - 1, Fun, [Fun()|Acc]);
-do_n_times(0, _Fun, Acc) ->
+do_n_times(Count, Fun, Acc, I) when Count > 0 ->
+    do_n_times(Count - 1, Fun, [Fun(I)|Acc], I + 1);
+do_n_times(0, _Fun, Acc, _I) ->
     lists:reverse(Acc).
 
 %%--------------------------------------------------------------------
 fix_sessions(Sessions, PropsToChange) ->
     [set_session_cfg(Session, PropsToChange) || Session <- Sessions].
+
+%%--------------------------------------------------------------------
+set_session_protocols(Proto, Sessions) ->
+    [set_protocol(Proto, Session) || Session <- Sessions].
+
+%%--------------------------------------------------------------------
+set_protocol(Proto, Session) ->
+    Config = value(config, Session),
+    case Proto of
+        h2 ->
+            set_prop({config,
+                      set_prop({protocol, Proto}, Config)}, Session);
+        h2c ->
+            ConfigWithoutSsl = set_prop({ssl_opts, []}, Config),
+            set_prop({config, set_prop({protocol, Proto}, ConfigWithoutSsl)},
+                     Session)
+    end.
 
 %%--------------------------------------------------------------------
 set_session_cfg(Session, PropList) ->
