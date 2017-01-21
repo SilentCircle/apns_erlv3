@@ -98,7 +98,7 @@ ConfigureCTOpts = fun(Config) ->
                           CTOpts0 = GetCTOpts(Config),
                           CTSpec0 = case GetCTSpec(CTOpts0) of
                                        undefined ->
-                                           "apns_erlv3.test.spec";
+                                           ["apns_erlv3.test.spec"];
                                        S ->
                                            S
                                    end,
