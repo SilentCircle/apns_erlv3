@@ -12,8 +12,9 @@
   positive_send_notification_tests,
   negative_send_notification_tests,
   quiesce_and_resume,
-  recovery_under_stress
+  recovery_under_stress%,
+  %concurrent_stream_limits_test
  ]}.
-%{cover, all_nodes, "test/cover.spec"}.
+{cover, all_nodes, "test/cover.spec"}.
 
 %% ex: ft=erlang ts=4 sts=4 sw=4 et:

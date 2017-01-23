@@ -54,7 +54,8 @@ all() ->
      {group, positive_send_notification_tests},
      {group, negative_send_notification_tests},
      {group, quiesce_and_resume},
-     {group, recovery_under_stress}
+     {group, recovery_under_stress},
+     {group, http2_settings}
     ].
 
 %%--------------------------------------------------------------------
@@ -110,6 +111,10 @@ groups() ->
      {recovery_under_stress, [], [
                                   async_flood_and_disconnect
                                  ]
+     },
+     {http2_settings, [], [
+                           concurrent_stream_limits_test
+                          ]
      }
     ].
 
@@ -338,7 +343,7 @@ reconnect_test(Config) when is_list(Config)  ->
                 ok = apns_erlv3_session:reconnect(Name),
                 {ok, StateName} = apns_erlv3_session:get_state_name(Name),
                 ct:pal("Session ~p state is ~p", [Name, StateName]),
-                ?assertEqual(StateName, connecting)
+                ?assert(lists:member(StateName, [connected, connecting]))
         end,
     for_all_sessions(F, ?sessions(Config)).
 
@@ -688,7 +693,7 @@ async_session_send_user_callback(Config) ->
                 Result = apns_erlv3_session:async_send_cb(Name, From, Nf, Cb),
                 ct:pal("Sent notification via session ~p, Result = ~p",
                        [Session, Result]),
-                {ok, {submitted, RUUID}} = Result,
+                {ok, {queued, RUUID}} = Result,
                 ?assertEqual(RUUID, UUID),
                 async_receive_user_cb(UUIDStr)
         end,
@@ -713,7 +718,7 @@ async_api_send_user_callback(Config) ->
                 Result = sc_push_svc_apnsv3:async_send(Name, Nf, Opts),
                 ct:pal("Sent notification via session ~p, Result = ~p",
                        [Name, Result]),
-                {ok, {submitted, RUUID}} = Result,
+                {ok, {queued, RUUID}} = Result,
                 ?assertEqual(RUUID, UUID),
                 async_receive_user_cb(UUIDStr)
         end,
@@ -760,6 +765,16 @@ async_flood_and_disconnect(Config) ->
                 p_call(Receiver, stop)
         end,
     for_all_sessions(F, ?sessions(Config)).
+
+%%--------------------------------------------------------------------
+%% Group: http2_settings
+%%--------------------------------------------------------------------
+
+concurrent_stream_limits_test(doc) ->
+    ["Test how session handles a peer that has maximum",
+     "concurrent streams set to 1."];
+concurrent_stream_limits_test(_Config) ->
+    ct:fail("Test not written").
 
 %%====================================================================
 %% Internal helper functions
@@ -880,7 +895,7 @@ wait_pending_responses(PendingDict, Receiver, MonRef) ->
             ct:fail("~p ~p crashed before completing, reason: ~p",
                     [Type, Receiver, Reason])
     after
-        10000 ->
+        25000 ->
             ct:fail({timeout, wait_pending_responses})
     end.
 
@@ -900,7 +915,7 @@ send_async_nf(I, Session, Receiver, Cb) when is_pid(Receiver) ->
 
     Opts = [{from_pid, Receiver}, {callback, Cb}],
     Result = sc_push_svc_apnsv3:async_send(Name, Nf, Opts),
-    {ok, {submitted, _RUUID}} = Result,
+    {ok, {queued, _RUUID}} = Result,
     #nf_info{session_name = Name,
              token = Token,
              uuid = UUIDStr}.

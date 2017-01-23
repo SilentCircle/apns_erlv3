@@ -26,6 +26,12 @@
 
 -define(LOG_GENERAL(Level, Fmt, Args), lager:Level(Fmt, Args)).
 
+-ifdef(INCLUDE_TRACE_LOGGING).
+-define(LOG_TRACE(Fmt, Args), ?LOG_DEBUG(Fmt, Args)).
+-else.
+-define(LOG_TRACE(_Fmt, _Args), (_ = ok)).
+-endif.
+
 -define(LOG_DEBUG(Fmt, Args),     ?LOG_GENERAL(debug, Fmt, Args)).
 -define(LOG_INFO(Fmt, Args),      ?LOG_GENERAL(info, Fmt, Args)).
 -define(LOG_NOTICE(Fmt, Args),    ?LOG_GENERAL(notice, Fmt, Args)).
