@@ -110,7 +110,7 @@ end_group(Config) ->
 
 %%--------------------------------------------------------------------
 fix_all_cert_paths(DataDir, Sessions) ->
-    KeyCfg = {config, ssl_opts},
+    KeyCfg = {config, ssl_opts}, % ssl_opts for session configs. Not ssl_options.
     [fix_cert_paths(KeyCfg, DataDir, Session) || Session <- Sessions].
 
 %%--------------------------------------------------------------------
@@ -118,7 +118,12 @@ fix_simulator_cert_paths(DataDir, SimConfig) ->
     SslOptsKey = ssl_options,
     SslOpts0 = value(SslOptsKey, SimConfig),
     SslOpts = fix_ssl_opts(SslOpts0, DataDir),
-    set_prop({SslOptsKey, SslOpts}, SimConfig).
+
+    AuthOptsKey = apns_erl_sim,
+    AuthOpts0 = value(AuthOptsKey, SimConfig),
+    AuthOpts = fix_jwt_key_path(AuthOpts0, DataDir),
+    set_prop({SslOptsKey, SslOpts},
+    set_prop({AuthOptsKey, AuthOpts}, SimConfig)).
 
 %%--------------------------------------------------------------------
 for_all_sessions(Fun, Sessions) when is_function(Fun, 1), is_list(Sessions) ->
@@ -152,16 +157,18 @@ make_sim_notification(Notification, SimCfg) ->
             Nf = keys_binary_to_atom(jsx:decode(JSON0)),
             NewNf = add_simcfg(Nf, SimCfg),
             JSON = jsx:encode(NewNf),
-            lists:keystore(json, 1, Notification, {json, JSON})
+            set_prop({json, JSON}, Notification)
     end.
 
+%%--------------------------------------------------------------------
 add_simcfg(Notification, SimCfg) ->
     APS0 = value(aps, Notification, []),
     Extra0 = value(extra, APS0, []),
-    Extra = lists:keystore(sim_cfg, 1, Extra0, {sim_cfg, SimCfg}),
-    APS = lists:keystore(extra, 1, APS0, {extra, Extra}),
-    lists:keystore(aps, 1, Notification, {aps, APS}).
+    Extra = set_prop({sim_cfg, SimCfg}, Extra0),
+    APS = set_prop({extra, Extra}, APS0),
+    set_prop({aps, APS}, Notification).
 
+%%--------------------------------------------------------------------
 keys_binary_to_atom([{K, V}|Rest]) ->
     [{sc_util:to_atom(K), keys_binary_to_atom(V)}|keys_binary_to_atom(Rest)];
 keys_binary_to_atom(V) ->
@@ -266,18 +273,40 @@ stop_session(SessCfg, StartedSessions, StopFun) when is_list(SessCfg),
 
 %%--------------------------------------------------------------------
 %% SimConfig = [{ssl_options, []},{ssl_true}].
+%%
+%% FIXME: This sucks, but for historical reasons the ssl options are named
+%% ssl_opts in the apns configs. However, chatterbox (and apns_erl_sim) both
+%% use the name ssl_options. This can and does lead to confusion.
 start_simulator(Name, SimConfig, LagerEnv, _PrivDir) ->
     %% Get important code paths
     CodePaths = [Path || Path <- code:get_path(),
                          string:rstr(Path, "_build/") > 0],
     %{ok, GenResultPL} = generate_sys_config(chatterbox, SimConfig, PrivDir),
-    ct:pal("Starting sim node named ~p", [Name]),
-    {ok, Node} = start_slave(Name, []),
-    ct:pal("Sim node name: ~p", [Node]),
+    ct:pal("Starting sim slave node named ~p", [Name]),
+    %% Start with kernel poll enabled and generous process allocation.
+    %% Erlang 17+ supports +Q in place of the environment variable, and
+    %% maximizes the ports to the ulimit-allowed number of ports.
+    Node = case start_slave(Name, "+K true +P 500000 -A 20") of
+               {ok, SimNode} ->
+                   ct:pal("Sim node name: ~p", [SimNode]),
+                   SimNode;
+               {error, Reason} ->
+                   ct:fail("Failed to start simulator slave node: ~p",
+                           [Reason])
+           end,
     ct:pal("Setting simulator configuration"),
     ct:pal("~p", [SimConfig]),
+    % apns_erl_sim
+    SimOptions = value(apns_erl_sim, SimConfig),
     _ = [ok = rpc:call(Node, application, set_env,
-                       [chatterbox, K, V], 1000) || {K, V} <- SimConfig],
+                       [apns_erl_sim, K, V], 1000) || {K, V} <- SimOptions],
+
+    % chatterbox
+    SslOptions = value(ssl_options, SimConfig),
+    IsSsl = value(ssl, SimConfig),
+    _ = [ok = rpc:call(Node, application, set_env,
+                       [chatterbox, K, V], 1000)
+         || {K, V} <- [{ssl, IsSsl}, {ssl_options, SslOptions}]],
 
     SimCBEnv = rpc:call(Node, application, get_all_env, [chatterbox], 1000),
     ct:pal("Sim's chatterbox environment: ~p", [SimCBEnv]),
@@ -422,20 +451,33 @@ get_saved_value(K, Config, Def) ->
 
 %%--------------------------------------------------------------------
 fix_cert_paths({ConfigKey, SslOptsKey}, DataDir, Session) ->
-    Config = value(ConfigKey, Session),
-    SslOpts = fix_ssl_opts(value(SslOptsKey, Config), DataDir),
-    set_prop({ConfigKey, set_prop({SslOptsKey, SslOpts}, Config)}, Session).
-
+    Config0 = value(ConfigKey, Session),
+    SslOpts = fix_ssl_opts(value(SslOptsKey, Config0), DataDir),
+    Config = set_prop({SslOptsKey, SslOpts}, Config0),
+    set_prop({ConfigKey, fix_apns_jwt_info(Config, DataDir)}, Session).
 
 %%--------------------------------------------------------------------
 fix_ssl_opts(SslOpts, DataDir) ->
     OptCaCertKV = fix_opt_kv(cacertfile, SslOpts, DataDir),
-    CertFilePath = fix_path(certfile, SslOpts, DataDir),
-    KeyFilePath = fix_path(keyfile, SslOpts, DataDir),
+    OptCertFilePath = fix_opt_kv(certfile, SslOpts, DataDir),
+    OptKeyFilePath = fix_opt_kv(keyfile, SslOpts, DataDir),
     PartialOpts = delete_keys([cacertfile, certfile, keyfile], SslOpts),
-    OptCaCertKV ++ [{certfile, CertFilePath},
-                    {keyfile, KeyFilePath} | PartialOpts].
+    OptCaCertKV ++ OptCertFilePath ++ OptKeyFilePath ++ PartialOpts.
 
+%%--------------------------------------------------------------------
+fix_jwt_key_path(AuthOpts, DataDir) ->
+    JWTKeyDirPath = fix_path(jwt_key_path, AuthOpts, DataDir),
+    set_prop({jwt_key_path, JWTKeyDirPath}, AuthOpts).
+
+%%--------------------------------------------------------------------
+fix_apns_jwt_info(Config, DataDir) ->
+    case proplists:get_value(apns_jwt_info, Config) of
+        {<<Kid/binary>>, <<JwtPath/binary>>} ->
+            P = filename:join(DataDir, binary_to_list(JwtPath)),
+            set_prop({apns_jwt_info, {Kid, list_to_binary(P)}}, Config);
+        _ ->
+            Config
+    end.
 
 %%--------------------------------------------------------------------
 fix_path(Key, PL, DataDir) ->
@@ -502,8 +544,10 @@ assert_keys_present(Keys, PL) ->
 %%====================================================================
 start_slave(Name, Args) ->
     {ok, Host} = inet:gethostname(),
-    slave:start(Host, Name, Args).
+    {ok, DNSHostName} = net_adm:dns_hostname(Host),
+    slave:start(DNSHostName, Name, Args).
 
+%%--------------------------------------------------------------------
 session_info(SessCfg, StartedSessions) ->
     Name = value(name, SessCfg),
     {Pid, Ref} = value(Name, StartedSessions),
@@ -704,7 +748,7 @@ check_async_resp({ok, {Action, <<_:128>> = UUID}}, ExpStatus) ->
     ct:pal("~p async notification, uuidstr: ~s\nuuid: ~w",
            [Action, UUIDStr, UUID]),
     ?assert(lists:member(Action, [queued, submitted])),
-    case wait_for_response(UUID, 5000) of
+    case wait_for_response(UUID, 10000) of
         {ok, {UUID, ParsedResp}} ->
             ct:pal("Received async response ~p", [ParsedResp]),
             check_parsed_resp(ParsedResp, ExpStatus),

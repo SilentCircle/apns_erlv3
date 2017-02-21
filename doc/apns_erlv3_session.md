@@ -95,7 +95,7 @@ used as the Issuer (iss) in the JWT.</li>
 
 
 
-<dd>The AppID Suffix as a binary, usually in reverse DNS format.  This is
+<dd>The App ID Suffix as a binary, usually in reverse DNS format.  This is
 used to validate the APNS certificate unless
 <code>disable_apns_cert_validation</code> is <code>true</code>.</dd>
 
@@ -107,8 +107,8 @@ used to validate the APNS certificate unless
 
 
 <dd><code>{Kid :: binary(), KeyFile :: binary()} | undefined</code>.<code>Kid</code> is the
-key id corresponding to the signind key.<code>KeyFile</code> is the name of the
-PEM-encoded JWT signing key to be used for authetication. This value is
+key id corresponding to the signing key.<code>KeyFile</code> is the name of the
+PEM-encoded JWT signing key to be used for authentication. This value is
 mutually exclusive with <code>ssl_opts</code>.  If this value is provided and is not
 <code>undefined</code>, <code>ssl_opts</code> will be ignored.</dd>
 
@@ -229,6 +229,53 @@ Default value: 300 seconds (5 minutes).
 
 
 
+<dt><code>queue_limit</code></dt>
+
+
+
+
+<dd>The maximum number of notifications that can be queued before
+getting a <code>try_again_later</code> backpressure error. Must be at least 1.
+<br />
+Default value: 5000.
+</dd>
+
+
+
+<dt><code>burst_size</code></dt>
+
+
+
+
+<dd><p>The maximum number of notification requests that will be made to the
+HTTP/2 client in an uninterrupted burst. This must be greater than zero.</p><p></p>Setting this to a very small number is likely to impact performance
+negatively. The same is true for a very large number, because the
+FSM is blocked while the HTTP/2 requests are being made. Note that the
+HTTP/2 requests are being made asynchronously, so the FSM is not
+blocked on actually sending the request over the wire, just on the HTTP/2
+client accepting the request.
+<br />
+Default value: 50.
+</dd>
+
+
+
+<dt><code>kick_sender_interval</code></dt>
+
+
+
+
+<dd>The number of milliseconds to wait before polling the input queue and
+potentially sending a burst of requests. If this is made too small, it
+could consume more CPU than desired. If too large, the notifications may
+be delayed too long, which could cause timeout issues. Must be more than
+zero.
+<br />
+Default value: 50.
+</dd>
+
+
+
 <dt><code>ssl_opts</code></dt>
 
 
@@ -241,16 +288,40 @@ See <a href="http://erlang.org/doc/man/ssl.md" target="_top"><tt>http://erlang.o
 
 
 
-#### <a name="Example_configuration">Example configuration</a> ####
-
+#### <a name="Example_configuration_for_certificate-based_authentication">Example configuration for certificate-based authentication</a> ####
 
 ```
    [{host, <<"api.push.apple.com">>},
     {port, 443},
     {apns_env, prod},
+    {app_id_suffix, <<"com.example.MyApp">>},
+    {apns_topic, <<"com.example.MyApp">>},
+    {team_id, <<"6F44JJ9SDF">>},
+    {retry_strategy, exponential},
+    {retry_delay, 1000},
+    {retry_max, 60000},
+    {disable_apns_cert_validation, false},
+    {keepalive_interval, 300},
+    {ssl_opts,
+     [{certfile, "/some/path/com.example.MyApp.cert.pem"},
+      {keyfile, "/some/path/com.example.MyApp.key.unencrypted.pem"},
+      {honor_cipher_order, false},
+      {versions, ['tlsv1.2']},
+      {alpn_preferred_protocols, [<<"h2">>]}].
+     ]}
+   ]
+```
+
+
+#### <a name="Example_configuration_for_token-based_authentication">Example configuration for token-based authentication</a> ####
+
+```
+   [{host, <<"api.push.apple.com">>},
+    {port, 443},
+    {apns_env, prod},
+    {app_id_suffix, <<"com.example.MyApp">>},
     {apns_topic, <<"com.example.MyApp">>},
     {apns_jwt_info, {<<"KEYID67890">>, <<"/path/to/private/key.pem">>}},
-    {app_id_suffix, <<"com.example.MyApp">>},
     {team_id, <<"6F44JJ9SDF">>},
     {retry_strategy, exponential},
     {retry_delay, 1000},
@@ -259,9 +330,7 @@ See <a href="http://erlang.org/doc/man/ssl.md" target="_top"><tt>http://erlang.o
     {jwt_max_age_secs, 3300},
     {keepalive_interval, 300},
     {ssl_opts,
-     [{certfile, "/some/path/com.example.MyApp.cert.pem"},
-      {keyfile, "/some/path/com.example.MyApp.key.unencrypted.pem"},
-      {cacertfile, "/etc/ssl/certs/ca-certificates.crt"},
+     [
       {honor_cipher_order, false},
       {versions, ['tlsv1.2']},
       {alpn_preferred_protocols, [<<"h2">>]}].
@@ -291,7 +360,7 @@ async_send_reply() = {ok, <a href="#type-async_send_result">async_send_result()<
 
 
 <pre><code>
-async_send_result() = <a href="#type-queued_result">queued_result()</a> | <a href="#type-submitted_result">submitted_result()</a>
+async_send_result() = <a href="#type-queued_result">queued_result()</a>
 </code></pre>
 
 
@@ -362,7 +431,7 @@ fsm_ref() = atom() | pid()
 
 
 <pre><code>
-option() = {host, binary()} | {port, non_neg_integer()} | {app_id_suffix, binary()} | {team_id, binary()} | {apns_env, prod | dev} | {apns_topic, binary()} | {disable_apns_cert_validation, boolean()} | {jwt_max_age_secs, non_neg_integer()} | {keepalive_interval, non_neg_integer()} | {ssl_opts, list()} | {retry_delay, non_neg_integer()} | {retry_max, pos_integer()} | {retry_strategy, fixed | exponential} | {flush_strategy, <a href="#type-flush_strategy_opt">flush_strategy_opt()</a>} | {requeue_strategy, <a href="#type-requeue_strategy_opt">requeue_strategy_opt()</a>}
+option() = {host, binary()} | {port, non_neg_integer()} | {app_id_suffix, binary()} | {team_id, binary()} | {apns_env, prod | dev} | {apns_topic, binary()} | {disable_apns_cert_validation, boolean()} | {jwt_max_age_secs, non_neg_integer()} | {keepalive_interval, non_neg_integer()} | {ssl_opts, list()} | {retry_delay, non_neg_integer()} | {retry_max, pos_integer()} | {retry_strategy, fixed | exponential} | {flush_strategy, <a href="#type-flush_strategy_opt">flush_strategy_opt()</a>} | {requeue_strategy, <a href="#type-requeue_strategy_opt">requeue_strategy_opt()</a>} | {queue_limit, pos_integer()} | {burst_size, pos_integer()} | {kick_sender_interval, pos_integer()}
 </code></pre>
 
 
@@ -385,6 +454,13 @@ options() = [<a href="#type-option">option()</a>]
 queued_result() = {queued, <a href="#type-uuid">uuid()</a>}
 </code></pre>
 
+This result is returned when
+the notification is queued.
+The APNS response will be sent
+to the caller's process as a
+message in the following format:
+`{apns_response, v3,
+{uuid(), Resp :: cb_result()}}`
 
 
 
@@ -438,16 +514,6 @@ send_opts() = [<a href="#type-send_opt">send_opt()</a>]
 
 
 
-### <a name="type-submitted_result">submitted_result()</a> ###
-
-
-<pre><code>
-submitted_result() = {submitted, <a href="#type-uuid">uuid()</a>}
-</code></pre>
-
-
-
-
 ### <a name="type-sync_result">sync_result()</a> ###
 
 
@@ -455,6 +521,8 @@ submitted_result() = {submitted, <a href="#type-uuid">uuid()</a>}
 sync_result() = {<a href="#type-uuid">uuid()</a>, <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/default/lib/apns_erl_util/doc/apns_lib_http2.md#type-parsed_rsp">apns_lib_http2:parsed_rsp()</a>}
 </code></pre>
 
+Returned from a
+synchronous send.
 
 
 
@@ -502,8 +570,9 @@ uuid_str() = <a href="/home/efine/work/sc/open_source/scpf/apns_erlv3/_build/def
 
 
 <table width="100%" border="1" cellspacing="0" cellpadding="2" summary="function index"><tr><td valign="top"><a href="#async_send-2">async_send/2</a></td><td>Asynchronously send notification in <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#async_send-3">async_send/3</a></td><td>Asynchronously send notification in <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#async_send_callback-3">async_send_callback/3</a></td><td>Standard async callback function.</td></tr><tr><td valign="top"><a href="#async_send_cb-4">async_send_cb/4</a></td><td>Asynchronously send notification in <code>Opts</code> with user-defined
-callback function.</td></tr><tr><td valign="top"><a href="#flush-1">flush/1</a></td><td>Flush (retransmit) any queued notifications.</td></tr><tr><td valign="top"><a href="#get_state-1">get_state/1</a></td><td>Get the current state of the FSM.</td></tr><tr><td valign="top"><a href="#get_state_name-1">get_state_name/1</a></td><td>Get the name of the current state of the FSM.</td></tr><tr><td valign="top"><a href="#is_connected-1">is_connected/1</a></td><td>Return <code>true</code> if the session is connected, <code>false</code> otherwise.</td></tr><tr><td valign="top"><a href="#quiesce-1">quiesce/1</a></td><td>Quiesce a session.</td></tr><tr><td valign="top"><a href="#reconnect-1">reconnect/1</a></td><td>Immediately disconnect the session and reconnect.</td></tr><tr><td valign="top"><a href="#reconnect-2">reconnect/2</a></td><td>Immediately disconnect the session and reconnect after <code>Delay</code> ms.</td></tr><tr><td valign="top"><a href="#resume-1">resume/1</a></td><td>Resume a quiesced session.</td></tr><tr><td valign="top"><a href="#send-2">send/2</a></td><td>Send a notification specified by <code>Nf</code> with options <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#send_cb-3">send_cb/3</a></td><td>Send a notification specified by <code>Nf</code> and a user-supplied callback
-function.</td></tr><tr><td valign="top"><a href="#start-2">start/2</a></td><td>Start a named session as described by the options <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#start_link-2">start_link/2</a></td><td>Start a named session as described by the options <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#stop-1">stop/1</a></td><td>Stop session.</td></tr><tr><td valign="top"><a href="#sync_send_callback-3">sync_send_callback/3</a></td><td>Standard sync callback function.</td></tr></table>
+callback function.</td></tr><tr><td valign="top"><a href="#disconnect-1">disconnect/1</a></td><td>Make session disconnect.</td></tr><tr><td valign="top"><a href="#get_state-1">get_state/1</a></td><td>Get the current state of the FSM.</td></tr><tr><td valign="top"><a href="#get_state_name-1">get_state_name/1</a></td><td>Get the name of the current state of the FSM.</td></tr><tr><td valign="top"><a href="#is_connected-1">is_connected/1</a></td><td>Return <code>true</code> if the session is connected, <code>false</code> otherwise.</td></tr><tr><td valign="top"><a href="#kick_sender-1">kick_sender/1</a></td><td>Wake up the sender to start sending queued notifications.</td></tr><tr><td valign="top"><a href="#ping-1">ping/1</a></td><td>Kick off an HTTP/2 PING.</td></tr><tr><td valign="top"><a href="#quiesce-1">quiesce/1</a></td><td>Quiesce a session.</td></tr><tr><td valign="top"><a href="#reconnect-1">reconnect/1</a></td><td>Immediately disconnect the session and reconnect.</td></tr><tr><td valign="top"><a href="#reconnect-2">reconnect/2</a></td><td>Immediately disconnect the session and reconnect after <code>Delay</code> ms.</td></tr><tr><td valign="top"><a href="#resume-1">resume/1</a></td><td>Resume a quiesced session.</td></tr><tr><td valign="top"><a href="#send-2">send/2</a></td><td>Send a notification specified by <code>Nf</code> with options <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#send_cb-3">send_cb/3</a></td><td>Send a notification specified by <code>Nf</code> and a user-supplied callback
+function.</td></tr><tr><td valign="top"><a href="#server_mcs-1">server_mcs/1</a></td><td>Get MCS of connected server.</td></tr><tr><td valign="top"><a href="#start-2">start/2</a></td><td>Start a named session as described by the options <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#start_link-2">start_link/2</a></td><td>Start a named session as described by the options <code>Opts</code>.</td></tr><tr><td valign="top"><a href="#stop-1">stop/1</a></td><td>Stop session.</td></tr><tr><td valign="top"><a href="#sync_reconnect-1">sync_reconnect/1</a></td><td>Immediately disconnect the session and reconnect, waiting until the
+actual reconnection completes before returning.</td></tr><tr><td valign="top"><a href="#sync_send_callback-3">sync_send_callback/3</a></td><td>Standard sync callback function.</td></tr></table>
 
 
 <a name="functions"></a>
@@ -568,7 +637,9 @@ async_send_cb(FsmRef, ReplyPid, Opts, Callback) -&gt; Result
 <ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>ReplyPid = pid()</code></li><li><code>Opts = <a href="#type-send_opts">send_opts()</a></code></li><li><code>Callback = <a href="#type-send_callback">send_callback()</a></code></li><li><code>Result = <a href="#type-async_send_reply">async_send_reply()</a></code></li></ul>
 
 Asynchronously send notification in `Opts` with user-defined
-callback function. If `id` is not provided in `Opts`, generate a UUID.
+callback function. If `id` is not provided in `Opts`, generate a UUID
+and use that instead.
+
 When the request has completed, invoke the user-defined callback
 function.
 
@@ -579,26 +650,26 @@ If the session has been quiesced by calling quiesce/1, all
 subsequent attempts to send notifications will receive `{error, quiesced}`
 responses.
 
-If the session is busy connecting to APNS (or disconnecting from APNS),
-attempts to send will receive a response, `{ok, {queued, UUID ::
-binary()}}`. The `queued` status means that the notification is being held
-until the session is able to connect to APNS, at which time it will be
-submitted. Queued notifications can be lost if the session is stopped
-without connecting.
+If the session is not quiesced, and the notification passes preliminary
+validation, attempts to send will receive a response `{ok, {queued, UUID ::
+binary()}}`.
 
-If the session is already connected (and not quiesced), and the notification
-passes preliminary validation, attempts to send will receive a response
-`{ok, {submitted, UUID :: binary()}}`.  This means that the notification has
-been accepted by the HTTP/2 client for asynchronous processing, and the
-callback function will be invoked at completion.
+The `queued` status means that the notification is being held until the
+session is able to send it to APNS.
+
+If the queue has reached its configured limit, attempts to send will
+receive `{error, try_again_later}` and the notification will not be
+queued. The caller needs to resubmit the notification after backing off
+for some time.
 
 
 ### <a name="Timeouts">Timeouts</a> ###
 
 There are multiple kinds of timeouts.
 
-If the session itself is so busy that the send request cannot be processed in time,
-a timeout error will occur. The default Erlang call timeout is applicable here.
+If the session itself is so busy that the send request cannot be processed
+in time, a timeout error will occur. The default Erlang call timeout is
+applicable here.
 
 An asynchronous timeout feature is planned but not currently implemented.
 
@@ -757,17 +828,17 @@ See `apns_lib_http2:parsed_rsp()`.
 ```
 
 
-<a name="flush-1"></a>
+<a name="disconnect-1"></a>
 
-### flush/1 ###
+### disconnect/1 ###
 
 <pre><code>
-flush(FsmRef) -&gt; ok
+disconnect(FsmRef) -&gt; ok
 </code></pre>
 
 <ul class="definitions"><li><code>FsmRef = term()</code></li></ul>
 
-Flush (retransmit) any queued notifications.
+Make session disconnect
 
 <a name="get_state-1"></a>
 
@@ -793,6 +864,30 @@ Get the name of the current state of the FSM.
 
 Return `true` if the session is connected, `false` otherwise.
 
+<a name="kick_sender-1"></a>
+
+### kick_sender/1 ###
+
+<pre><code>
+kick_sender(FsmRef) -&gt; ok
+</code></pre>
+
+<ul class="definitions"><li><code>FsmRef = term()</code></li></ul>
+
+Wake up the sender to start sending queued notifications.
+
+<a name="ping-1"></a>
+
+### ping/1 ###
+
+<pre><code>
+ping(FsmRef) -&gt; ok
+</code></pre>
+
+<ul class="definitions"><li><code>FsmRef = term()</code></li></ul>
+
+Kick off an HTTP/2 PING.
+
 <a name="quiesce-1"></a>
 
 ### quiesce/1 ###
@@ -803,7 +898,7 @@ quiesce(FsmRef) -&gt; Result
 
 <ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li><li><code>Result = ok | {error, term()}</code></li></ul>
 
-Quiesce a session. This put sthe session into a mode
+Quiesce a session. This puts the session into a mode
 where all subsequent requests are rejected with `{error, quiesced}`.
 
 <a name="reconnect-1"></a>
@@ -861,6 +956,18 @@ send_cb(FsmRef, Opts, Callback) -&gt; Result
 Send a notification specified by `Nf` and a user-supplied callback
 function.
 
+<a name="server_mcs-1"></a>
+
+### server_mcs/1 ###
+
+<pre><code>
+server_mcs(FsmRef) -&gt; {ok, MCS} | {error, Reason}
+</code></pre>
+
+<ul class="definitions"><li><code>FsmRef = term()</code></li><li><code>MCS = non_neg_integer() | unlimited</code></li><li><code>Reason = term()</code></li></ul>
+
+Get MCS of connected server.
+
 <a name="start-2"></a>
 
 ### start/2 ###
@@ -901,6 +1008,15 @@ stop(FsmRef) -&gt; ok
 <ul class="definitions"><li><code>FsmRef = <a href="#type-fsm_ref">fsm_ref()</a></code></li></ul>
 
 Stop session.
+
+<a name="sync_reconnect-1"></a>
+
+### sync_reconnect/1 ###
+
+`sync_reconnect(FsmRef) -> any()`
+
+Immediately disconnect the session and reconnect, waiting until the
+actual reconnection completes before returning.
 
 <a name="sync_send_callback-3"></a>
 
