@@ -165,25 +165,9 @@ init_per_suite(Config) ->
                end,
     ct:pal("Adjusted sessions: ~p", [Sessions]),
 
-    SimNode = ct:get_config(sim_node_name),
-    ct:pal("Configured sim node name: ~p", [SimNode]),
-    SimConfig0 = ct:get_config(simulator_config),
-    ct:pal("Raw sim cfg: ~p", [SimConfig0]),
-
-    SimConfig = case TestMode of
-                    https ->
-                        set_prop({ssl, true},
-                                 fix_simulator_cert_paths(DataDir,
-                                                          SimConfig0));
-                    http ->
-                        SimSslOpts = lists:filter(
-                                       fun({K, _}) ->
-                                               lists:member(K, [ip, port])
-                                       end, value(ssl_opts, SimConfig0, [])
-                                      ),
-                        set_props([{ssl, false},
-                                   {ssl_opts, SimSslOpts}], SimConfig0)
-                end,
+    {StartedApps, SimNode, SimConfig} = maybe_start_sim_node(DataDir,
+                                                             PrivDir,
+                                                             TestMode),
 
     ValidCertCfg = case TestMode of
                        https ->
@@ -195,14 +179,6 @@ init_per_suite(Config) ->
                            []
                    end,
     ct:pal("Adjusted cert config: ~p", [ValidCertCfg]),
-
-    LagerEnv = ct:get_config(simulator_logging),
-    ct:pal("Raw sim logging cfg: ~p", [LagerEnv]),
-
-    ct:pal("Starting simulator with logging env ~p, config ~p",
-           [LagerEnv, SimConfig]),
-    {ok, StartedApps} = start_simulator(SimNode, SimConfig, LagerEnv, PrivDir),
-    wait_until_sim_active(SimConfig),
 
     LagerCTBackend = ct:get_config(lager_common_test_backend),
     Config ++ [{test_mode, TestMode},
@@ -292,10 +268,11 @@ start_stop_session_test(_Config) ->
     %% This is all done using init/end_per_testcase
     ok.
 
+%%--------------------------------------------------------------------
 crash_session_startup_test(doc) ->
     ["Crash a session by starting it badly."];
 crash_session_startup_test(_Config) ->
-    ct:pal("Expecting crash when starting session with empty opts~n"),
+    ct:pal("Expecting crash when starting session with empty opts"),
     ?assertMatch({error, {{key_not_found, _Key}, _StackTrace}},
                  apns_erlv3_session:start(dummy, [])).
 
@@ -339,11 +316,11 @@ reconnect_test(doc) -> ["Test reconnect/1 debug function"];
 reconnect_test(Config) when is_list(Config)  ->
     F = fun(Session) ->
                 Name = ?name(Session),
-                ct:pal("Forcing reconnect of session ~p", [Name]),
-                ok = apns_erlv3_session:reconnect(Name),
+                ct:pal("Forcing sync reconnect of session ~p", [Name]),
+                ok = apns_erlv3_session:sync_reconnect(Name),
                 {ok, StateName} = apns_erlv3_session:get_state_name(Name),
                 ct:pal("Session ~p state is ~p", [Name, StateName]),
-                ?assert(lists:member(StateName, [connected, connecting]))
+                ?assertEqual(connected, StateName)
         end,
     for_all_sessions(F, ?sessions(Config)).
 
@@ -525,7 +502,8 @@ send_expired_msg_while_reconnecting(Config) ->
                         ExpiresAt = erlang:system_time(seconds) + 1,
                         make_nf(Session, #{badge => 6, expiry => ExpiresAt})
                 end,
-    SendFun = apnsv3_test_gen:send_fun_nf({error, expired}, MakeNfFun),
+    CheckFun = fun(Resp) -> ?assertMatch({error, {_, expired}}, Resp) end,
+    SendFun = apnsv3_test_gen:send_fun_nf(CheckFun, MakeNfFun),
     F = fun(Session) ->
                 Name = ?name(Session),
                 ct:pal("Forcing reconnect of session ~p with delay", [Name]),
@@ -570,8 +548,10 @@ bad_in_general(Config) ->
 bad_nf_format(doc) -> ["Ensure bad nf proplist is handled correctly"];
 bad_nf_format(Config) when is_list(Config)  ->
     BadNfs = [
-              [], % missing push token
-              [{token, rand_push_tok()}] % Must be binary
+              {[],
+               "Expecting '{key_not_found, token}' error"},
+              [{{token, rand_push_tok()},
+                "Expecting '{not_a_binary, token}' error"}]
              ],
     F = fun(Session) ->
                 Name = ?name(Session),
@@ -582,8 +562,9 @@ bad_nf_format(Config) when is_list(Config)  ->
                 [begin
                      NfFun = fun(_) -> {Nf, Name} end,
                      SendFun = apnsv3_test_gen:send_fun_nf(CheckFun, NfFun),
+                     ct:pal("~s", [DebugMsg]),
                      SendFun(Session)
-                 end || Nf <- BadNfs]
+                 end || {Nf, DebugMsg} <- BadNfs]
         end,
     for_all_sessions(F, ?sessions(Config)).
 
@@ -601,6 +582,7 @@ bad_nf_backend(Config) ->
                       {topic, <<"Some BS Topic">>}
                      ],
 
+                ct:pal("Sending notification via API: ~p", [Nf]),
                 {ok, {UUID, PResp}} = sc_push_svc_apnsv3:send(Name, Nf),
                 ct:pal("Sent notification via API, Resp = ~p", [PResp]),
                 CheckFun = fun(Status) ->
@@ -693,7 +675,7 @@ async_session_send_user_callback(Config) ->
                 Result = apns_erlv3_session:async_send_cb(Name, From, Nf, Cb),
                 ct:pal("Sent notification via session ~p, Result = ~p",
                        [Session, Result]),
-                {ok, {queued, RUUID}} = Result,
+                {ok, {_Status, RUUID}} = Result,
                 ?assertEqual(RUUID, UUID),
                 async_receive_user_cb(UUIDStr)
         end,
@@ -718,7 +700,8 @@ async_api_send_user_callback(Config) ->
                 Result = sc_push_svc_apnsv3:async_send(Name, Nf, Opts),
                 ct:pal("Sent notification via session ~p, Result = ~p",
                        [Name, Result]),
-                {ok, {queued, RUUID}} = Result,
+                {ok, {Status, RUUID}} = Result,
+                ?assert(Status =:= queued orelse Status =:= submitted),
                 ?assertEqual(RUUID, UUID),
                 async_receive_user_cb(UUIDStr)
         end,
@@ -732,8 +715,9 @@ async_flood_and_disconnect(doc) ->
      "are in progress"];
 async_flood_and_disconnect(Config) ->
     NumToSend = value(flood_test_messages, Config),
+    LogDisp = ct:get_config(flood_test_log_disp, dont_log),
     Self = self(),
-    Cb = async_user_callback_fun(dont_log),
+    Cb = async_user_callback_fun(LogDisp),
     F = fun(Session) ->
                 Name = ?name(Session),
                 % Start a receiver process to collect the responses
@@ -748,6 +732,7 @@ async_flood_and_disconnect(Config) ->
                                        send_async_nf(I, Session, Receiver, Cb)
                                end),
                 ct:pal("Sent off ~B notifications", [NumToSend]),
+                % Store list of pending notifications
                 Pending = lists:foldl(
                             fun(#nf_info{}=NFI, Acc) ->
                                     dict:store(NFI#nf_info.uuid, NFI, Acc)
@@ -759,22 +744,37 @@ async_flood_and_disconnect(Config) ->
                 ct:pal("Reconnected session ~p", [Name]),
                 % Wait for all the responses or die
                 ct:pal("Waiting for pending responses from ~p", [Name]),
+                T1 = erlang:system_time(milli_seconds),
                 wait_pending_responses(Pending, Receiver, MonRef),
-                ct:pal("Got pending responses from ~p", [Name]),
+                T2 = erlang:system_time(milli_seconds),
+                Elapsed = T2 - T1,
+                ct:pal("Got ~B pending responses from ~p in ~B ms",
+                       [dict:size(Pending), Name, Elapsed]),
+                % -----------------------------------------
+                % TODO: Ensure that session doesn't have any requests
+                % hanging around in its internal state.
+                % -----------------------------------------
                 % Stop receiver (probably not really necessary, but ok)
                 p_call(Receiver, stop)
         end,
     for_all_sessions(F, ?sessions(Config)).
 
 %%--------------------------------------------------------------------
-%% Group: http2_settings
-%%--------------------------------------------------------------------
-
-concurrent_stream_limits_test(doc) ->
-    ["Test how session handles a peer that has maximum",
-     "concurrent streams set to 1."];
-concurrent_stream_limits_test(_Config) ->
-    ct:fail("Test not written").
+sync_flood_and_disconnect(doc) ->
+    ["Test recovery from disconnect while sync notifications",
+     "are in progress"];
+sync_flood_and_disconnect(Config) ->
+    NumToSend = value(flood_test_messages, Config),
+    F = fun(Session) ->
+                % Send off all the notifications asynchronously
+                L = do_n_times(NumToSend,
+                               fun(I) ->
+                                       send_sync_nf(I, Session)
+                               end),
+                ct:pal("Sent off ~B notifications", [NumToSend]),
+                ct:pal("Responses:\n~p", [L])
+        end,
+    for_all_sessions(F, ?sessions(Config)).
 
 %%====================================================================
 %% Internal helper functions
@@ -836,8 +836,8 @@ async_user_callback_fun(LogDisposition) when LogDisposition == do_log orelse
                 Caller when is_pid(Caller) ->
                     UUIDStr = value(uuid, NfPL),
                     _ = (LogDisposition == do_log) andalso
-                        ct:pal("Invoke callback for UUIDStr ~s, caller ~p",
-                               [UUIDStr, Caller]),
+                        ct:pal("Invoke callback for UUIDStr ~s, caller ~p, "
+                               "resp:\n~p", [UUIDStr, Caller, Resp]),
                     Caller ! {user_defined_cb, #{uuid => UUIDStr,
                                                  nf => NfPL,
                                                  req => Req,
@@ -894,9 +894,6 @@ wait_pending_responses(PendingDict, Receiver, MonRef) ->
         {'DOWN', MonRef, Type, Receiver, Reason} ->
             ct:fail("~p ~p crashed before completing, reason: ~p",
                     [Type, Receiver, Reason])
-    after
-        25000 ->
-            ct:fail({timeout, wait_pending_responses})
     end.
 
 
@@ -914,11 +911,37 @@ send_async_nf(I, Session, Receiver, Cb) when is_pid(Receiver) ->
          ],
 
     Opts = [{from_pid, Receiver}, {callback, Cb}],
-    Result = sc_push_svc_apnsv3:async_send(Name, Nf, Opts),
-    {ok, {queued, _RUUID}} = Result,
-    #nf_info{session_name = Name,
-             token = Token,
-             uuid = UUIDStr}.
+    send_async_nf_impl(Name, Nf, Opts, Token, UUIDStr).
+
+%%--------------------------------------------------------------------
+send_async_nf_impl(Name, Nf, Opts, Token, UUIDStr) ->
+    case sc_push_svc_apnsv3:async_send(Name, Nf, Opts) of
+        {ok, {Action, _RUUID}} when Action =:= submitted;
+                                    Action =:= queued ->
+            #nf_info{session_name = Name,
+                     token = Token,
+                     uuid = UUIDStr};
+        {error, {_UUID, try_again_later}} -> % backpressure kicked in
+            timer:sleep(50),
+            send_async_nf_impl(Name, Nf, Opts, Token, UUIDStr);
+        Other ->
+            ct:fail("Unexpected response: ~p", [Other])
+    end.
+
+%%--------------------------------------------------------------------
+send_sync_nf(I, Session) ->
+    Name = ?name(Session),
+    UUIDStr = gen_uuid(),
+    Alert = list_to_binary(io_lib:format("sync_flood_and_disconnect #~4..0B",
+                                         [I])),
+    Token = sc_util:to_bin(rand_push_tok()),
+    Nf = [{alert, Alert},
+          {uuid, UUIDStr},
+          {token, Token},
+          {topic, <<"com.example.FakeApp.voip">>}
+         ],
+
+    sc_push_svc_apnsv3:send(Name, Nf).
 
 %%--------------------------------------------------------------------
 p_spawn(M, F, A) ->
@@ -965,7 +988,13 @@ async_flood_receiver(Count, ParentPid, Dict, NR) when Count > 0 andalso
         {user_defined_cb, #{uuid := UUIDStr, resp := Resp}} ->
             notify_first_response(ParentPid, NR),
             UUID = str_to_uuid(UUIDStr),
-            {ok, {UUID, ParsedResponse}} = Resp,
+            ParsedResponse = case Resp of
+                                 {ok, {UUID, PR}} ->
+                                     PR;
+                                 _ ->
+                                     ct:fail("~p: error in resp ~p",
+                                             [async_flood_receiver, Resp])
+                             end,
             case value(status, ParsedResponse) of
                 <<"200">> ->
                     async_flood_receiver(Count - 1, ParentPid,
@@ -1002,10 +1031,10 @@ notify_first_response(_ParentPid, _) ->
 
 %%--------------------------------------------------------------------
 do_n_times(Count, Fun) ->
-    do_n_times(Count, Fun, [], 1).
+    do_n_times(Count, Fun, [], 0).
 
 do_n_times(Count, Fun, Acc, I) when Count > 0 ->
-    do_n_times(Count - 1, Fun, [Fun(I)|Acc], I + 1);
+    do_n_times(Count - 1, Fun, [Fun(I + 1)|Acc], I + 1);
 do_n_times(0, _Fun, Acc, _I) ->
     lists:reverse(Acc).
 
@@ -1025,6 +1054,8 @@ set_protocol(Proto, Session) ->
             set_prop({config,
                       set_prop({protocol, Proto}, Config)}, Session);
         h2c ->
+            % Note that ssl_opts is what's used in the session configs,
+            % not ssl_options.
             ConfigWithoutSsl = set_prop({ssl_opts, []}, Config),
             set_prop({config, set_prop({protocol, Proto}, ConfigWithoutSsl)},
                      Session)
@@ -1051,3 +1082,43 @@ wait_until(Pred, Args) when is_function(Pred, 1) ->
         true ->
             ok
     end.
+
+%%--------------------------------------------------------------------
+maybe_start_sim_node(DataDir, PrivDir, TestMode) ->
+    case ct:get_config(sim_node_override, use_slave) of
+        no_slave ->
+            {[], noname, []};
+        use_slave ->
+            start_sim_node(DataDir, PrivDir, TestMode)
+    end.
+
+%%--------------------------------------------------------------------
+start_sim_node(DataDir, PrivDir, TestMode) ->
+    SimNode = ct:get_config(sim_node_name),
+    ct:pal("Configured sim node name: ~p", [SimNode]),
+    SimConfig0 = ct:get_config(simulator_config),
+    ct:pal("Raw sim cfg: ~p", [SimConfig0]),
+
+    SimConfig1 = fix_simulator_cert_paths(DataDir, SimConfig0),
+    ct:pal("Sim cfg with fixed paths: ~p", [SimConfig1]),
+    SimConfig = case TestMode of
+                    https ->
+                        set_prop({ssl, true}, SimConfig1);
+                    http ->
+                        SimSslOpts = lists:filter(
+                                       fun({K, _}) ->
+                                               lists:member(K, [ip, port])
+                                       end, value(ssl_options, SimConfig1, [])
+                                      ),
+                        set_props([{ssl, false},
+                                   {ssl_options, SimSslOpts}], SimConfig1)
+                end,
+
+    LagerEnv = ct:get_config(simulator_logging),
+    ct:pal("Raw sim logging cfg: ~p", [LagerEnv]),
+
+    ct:pal("Starting simulator with logging env ~p, config ~p",
+           [LagerEnv, SimConfig]),
+    {ok, StartedApps} = start_simulator(SimNode, SimConfig, LagerEnv, PrivDir),
+    wait_until_sim_active(SimConfig),
+    {StartedApps, SimNode, SimConfig}.

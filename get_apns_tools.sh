@@ -4,6 +4,14 @@ set -e
 
 APNS_TOOLS_REPO=https://github.com/SilentCircle/apns_tools.git
 
+TEST_SUITE_DATA=test/apns_erlv3_SUITE_data
+TEST_SUITE_DIR=_build/test/lib/apns_erlv3/${TEST_SUITE_DATA}
+
+TOOLS_DIR=tools/apns_tools
+CA_DIR=${TOOLS_DIR}/CA
+AUTH_KEY_DIR=${TOOLS_DIR}/apns_auth_keys
+
+
 die() {
     echo $* >&2
     exit 1
@@ -16,6 +24,8 @@ upstream_changed() {
 }
 
 get_tools() {
+    local upstream_did_change=false
+
     mkdir -p tools
     pushd tools > /dev/null 2>&1
 
@@ -26,8 +36,6 @@ get_tools() {
         if upstream_changed; then
             git merge --ff FETCH_HEAD
             upstream_did_change=true
-        else
-            upstream_did_change=false
         fi
     else
         upstream_did_change=true
@@ -37,7 +45,7 @@ get_tools() {
     fi
 
     popd > /dev/null 2>&1
-    test $upstream_did_change
+    $upstream_did_change
 }
 
 generate_new_certs() {
@@ -50,12 +58,14 @@ generate_new_certs() {
     return $rc
 }
 
-copy_cert_data() {
-    CA_DIR=tools/apns_tools/CA
-    TEST_SUITE_DATA=test/apns_erlv3_SUITE_data
-    TEST_SUITE_DIR=_build/test/lib/apns_erlv3/${TEST_SUITE_DATA}
+assert_dir_exists() {
+    local dir="$1"; shift
 
-    [[ -d ${CA_DIR} ]] || die "Expected ${CA_DIR} to exist"
+    [[ -d "$dir" ]] || die "Expected $dir to exist"
+}
+
+copy_cert_data() {
+    assert_dir_exists "${CA_DIR}"
 
     mkdir -p ${TEST_SUITE_DIR}
     find ${TEST_SUITE_DIR} -name '*.pem' | xargs rm -f
@@ -67,9 +77,21 @@ copy_cert_data() {
     done
 }
 
+copy_auth_key_data() {
+    assert_dir_exists "${AUTH_KEY_DIR}"
+
+    mkdir -p ${TEST_SUITE_DIR}
+    find ${TEST_SUITE_DIR} -name '*.p8' | xargs rm -f
+
+    cp ${AUTH_KEY_DIR}/*.p8 ${TEST_SUITE_DIR}/
+}
+
 if get_tools; then
     generate_new_certs || die "Error generating new certs"
+else
+    echo "Not generating new certs because upstream has not changed."
 fi
 
 copy_cert_data
+copy_auth_key_data
 
