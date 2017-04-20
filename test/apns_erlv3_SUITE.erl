@@ -109,7 +109,8 @@ groups() ->
      },
 
      {recovery_under_stress, [], [
-                                  async_flood_and_disconnect
+                                  async_flood_and_disconnect,
+                                  async_check_stream_is_garbage_collected
                                  ]
      },
      {http2_settings, [], [
@@ -388,13 +389,13 @@ disconnect_disconnected_test(Config) ->
 %%--------------------------------------------------------------------
 validation_tests(doc) -> ["Exercise private validation functions"];
 validation_tests(Config) ->
-    ?assertEqual(apns_erlv3_session:validate_boolean({test, true}), true),
-    ?assertEqual(apns_erlv3_session:validate_boolean({test, false}), false),
+    ?assertEqual(true, apns_erlv3_session:validate_boolean({test, true})),
+    ?assertEqual(false, apns_erlv3_session:validate_boolean({test, false})),
     ?assertThrow({bad_options, {not_a_boolean, test}},
                   apns_erlv3_session:validate_boolean({test, 1})),
 
     ValidValues = [a, b, c, d, e],
-    ?assertEqual(apns_erlv3_session:validate_enum({t_a, a}, ValidValues), a),
+    ?assertEqual(a, apns_erlv3_session:validate_enum({t_a, a}, ValidValues)),
     ?assertThrow({bad_options,
                   {invalid_enum,
                    {name, t_x},
@@ -776,9 +777,64 @@ sync_flood_and_disconnect(Config) ->
         end,
     for_all_sessions(F, ?sessions(Config)).
 
+%%--------------------------------------------------------------------
+async_check_stream_is_garbage_collected(doc) ->
+    ["Ensure that streams are garbage collected after they are read"];
+async_check_stream_is_garbage_collected(Config) ->
+    NumToSend = 100,
+    LogDisp = dont_log,
+    Self = self(),
+    Cb = async_user_callback_fun(LogDisp),
+    F = fun(Session) ->
+                Name = ?name(Session),
+                % Start a receiver process to collect the responses
+                ct:pal("Spawning receiver process..."),
+                {ok, {Receiver, MonRef}} = p_spawn(?MODULE,
+                                                   async_flood_receiver,
+                                                   [NumToSend, Self]),
+                ct:pal("Spawned receiver process ~p", [Receiver]),
+                % Send off all the notifications asynchronously
+                L = do_n_times(NumToSend,
+                               fun(I) ->
+                                       send_async_nf(I, Session, Receiver, Cb)
+                               end),
+                ct:pal("Sent off ~B notifications", [NumToSend]),
+                % Store list of pending notifications
+                Pending = lists:foldl(
+                            fun(#nf_info{}=NFI, Acc) ->
+                                    dict:store(NFI#nf_info.uuid, NFI, Acc)
+                            end, dict:new(), L),
+                % Wait for all the responses or die
+                ct:pal("Waiting for pending responses from ~p", [Name]),
+                T1 = erlang:system_time(milli_seconds),
+                wait_pending_responses(Pending, Receiver, MonRef),
+                T2 = erlang:system_time(milli_seconds),
+                Elapsed = T2 - T1,
+                ct:pal("Got ~B pending responses from ~p in ~B ms",
+                       [dict:size(Pending), Name, Elapsed]),
+                % -----------------------------------------
+                % Verify that there are no streams left, because we have asked
+                % for the responses from all the streams by now.
+                % -----------------------------------------
+                ActiveStreams = get_active_streams(Name),
+                ?assertEqual([], ActiveStreams),
+                % Stop receiver (probably not really necessary, but ok)
+                p_call(Receiver, stop)
+        end,
+    for_all_sessions(F, ?sessions(Config)).
+
+
 %%====================================================================
 %% Internal helper functions
 %%====================================================================
+-spec get_active_streams(atom()) -> list().
+get_active_streams(Session) ->
+    SessionPid = whereis(Session),
+    {ok, ConnPid} = apns_erlv3_session:conn_pid(SessionPid),
+    SS = h2_connection:get_streams(ConnPid),
+    h2_stream_set:my_active_streams(SS).
+
+%%--------------------------------------------------------------------
 -spec init_testcase(Case, Config, StartFun) -> Result when
       Case :: atom(), Config :: [{_,_}],
       StartFun :: fun((Arg, Config) -> {ok, pid()}),

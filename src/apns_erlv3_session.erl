@@ -279,7 +279,8 @@
          kick_sender/1,
          ping/1,
          disconnect/1,
-         server_mcs/1
+         server_mcs/1,
+         conn_pid/1
         ]).
 
 %%% Debugging Functions
@@ -898,6 +899,15 @@ disconnect(FsmRef) ->
 server_mcs(FsmRef) ->
     try_sync_send_all_state_event(FsmRef, server_mcs).
 
+%%--------------------------------------------------------------------
+%% @doc Get connection PID of HTTP/2 client.
+%% @end
+%%--------------------------------------------------------------------
+-spec conn_pid(FsmRef) -> {ok, pid()} | {error, not_connected} when
+      FsmRef :: term().
+conn_pid(FsmRef) ->
+    try_sync_send_all_state_event(FsmRef, conn_pid).
+
 %%% ==========================================================================
 %%% Debugging Functions
 %%% ==========================================================================
@@ -1017,6 +1027,11 @@ handle_sync_event(server_mcs, _From, StateName, State) ->
                     {error, unavailable}
             end,
     reply(Reply, StateName, State);
+
+handle_sync_event(conn_pid, _From, StateName, #?S{http2_pid=undefined}=S) ->
+    reply({error, not_connected}, StateName, S);
+handle_sync_event(conn_pid, _From, StateName, #?S{http2_pid=ConnPid}=S) ->
+    reply({ok, ConnPid}, StateName, S);
 
 handle_sync_event(is_connected, _From, StateName, State) ->
     reply({ok, StateName == connected}, StateName, State);
