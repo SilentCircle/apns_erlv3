@@ -2341,9 +2341,21 @@ http2_frame(Type, Flags, StreamId, <<Payload/binary>>) ->
 
 %%--------------------------------------------------------------------
 %% @private
-apns_deregister_token(Token) ->
+apns_mark_token_invalid(Token, PosixTimeMs) ->
     SvcTok = sc_push_reg_api:make_svc_tok(apns, Token),
-    ok = sc_push_reg_api:deregister_svc_tok(SvcTok).
+    % TODO: Remove check for function once code is in sync
+    % This isn't too bad because invalid tokens are relatively infrequent.
+    case erlang:function_exported(sc_push_reg_api,
+                                  update_invalid_timestamp_by_svc_tok,
+                                  2) of
+        true ->
+            ok = sc_push_reg_api:update_invalid_timestamp_by_svc_tok(SvcTok, PosixTimeMs);
+        false ->
+            ?LOG_WARNING("Cannot invalidate token ~s due to unexported function ~p,"
+                         " ignoring.",
+                         ["sc_push_reg_api:update_invalid_timestamp_by_svc_tok/2"])
+    end,
+    ok.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -2719,14 +2731,30 @@ handle_invalid_jwt(ParsedResp, Req, #?S{jwt_ctx=JwtCtx}=State0) ->
 
 %%--------------------------------------------------------------------
 %% @private
+%% @doc
+%% We no longer delete tokens; we save a timestamp we get from APNS
+%% corresponding to the latest time it was known to be invalid and stop pushing
+%% to it. For now, we just log this for postprocessing.
+%%
+%% TODO: Update last_invalid_on in database to Timestamp
+%%
+%% However, if the token is subsequently re-registered, its time of
+%% registration is stored and if that time is more recent than the last invalid
+%% timestamp, we resume pushing to it.
+%% @end
+
 handle_unregistered_token(ParsedResp, Req, State0) ->
     UUID = pv_req(uuid, ParsedResp),
+    TimestampStr = pv_req(timestamp_desc, ParsedResp),
+    PosixTimestampMs = pv_req(timestamp, ParsedResp),
     Token = tok_b(req_nf(Req)),
-    ?LOG_WARNING("Failed to send notification due to invalid APNS token, "
-                 "APNS HTTP/2 session ~p;\nnotification uuid ~s, token ~s",
-                 [State0#?S.name, UUID, Token]),
-    ok = apns_deregister_token(Token),
-    ?LOG_INFO("Deregistered token ~s", [Token]),
+    ?LOG_WARNING("Failed to send notification due to invalid APNS token#"
+                 "uuid=~s|token=~s|last_invalid_on=~s|posix_ms=~B|session=~p",
+                 [UUID, Token, TimestampStr, PosixTimestampMs,
+                  State0#?S.name]),
+    ok = apns_mark_token_invalid(Token, PosixTimestampMs),
+    ?LOG_WARNING("Invalidated token=~s|posix_ms=~B|timestamp=~s\n",
+                 [Token, PosixTimestampMs, TimestampStr]),
     State0.
 
 %%--------------------------------------------------------------------
