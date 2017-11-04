@@ -2,6 +2,13 @@
 
 set -e
 
+croak() {
+    echo "$0: Error on line $1" >&2
+    exit 1
+}
+
+trap 'croak $LINENO' ERR
+
 echo $0: Start
 
 (( $# == 2 ))
@@ -16,3 +23,5 @@ echo $0: Get fake cert tools and generate certs in $(pwd)/tools/apns_tools/CA
 # Generate the test spec
 echo $0: Generate test spec ${TEST_SPEC_NAME} for node ${NODE_NAME}
 ./template_nodename.sh ${NODE_NAME} ${TEST_SPEC_NAME}.src ${TEST_SPEC_NAME}
+
+echo $0: Complete

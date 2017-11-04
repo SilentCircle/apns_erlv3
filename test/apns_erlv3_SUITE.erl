@@ -123,6 +123,7 @@ groups() ->
 init_per_suite(Config) ->
     ct:pal("Entering init_per_suite; config: ~p", [Config]),
     ct:pal("My Erlang node name is ~p", [node()]),
+    ct:pal("My Erlang cookie is ~p", [erlang:get_cookie()]),
 
     ok = ct:require(test_mode),
     ok = ct:require(flood_test_messages),
@@ -849,7 +850,6 @@ init_testcase(Case, Config, StartFun) when is_function(StartFun, 2) ->
     mnesia:delete_schema([node()]),
     ok = mnesia:create_schema([node()]),
     ok = mnesia:start(),
-    ok = sc_push_reg_api:init(),
     Start = fun(Session) ->
                     Name = ?name(Session),
                     {ok, {Pid, _Ref}=S} = start_session(Session, StartFun),
