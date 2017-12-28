@@ -29,7 +29,8 @@ clean: docclean
 	$(REBAR) clean
 
 ct: $(REBAR)
-	$(REBAR) do clean, ct --name ct1_apns_erlv3 $(CT_EXTRA_OPTS) --cover
+	@echo CT_EXTRA_OPTS: $(CT_EXTRA_OPTS)
+	$(REBAR) do clean, ct $(CT_EXTRA_OPTS) --cover
 
 dialyzer: $(REBAR)
 	$(REBAR) dialyzer

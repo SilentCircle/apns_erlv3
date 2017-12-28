@@ -1,27 +1,4 @@
 
-Debug = case os:getenv("REBAR_CONFIG_SCRIPT_DEBUG") of
-           X when X == false orelse X == [] -> false;
-           _ -> true
-        end.
-
-%% If EnvVar exists and has some content, call UserFun(Content, UserArg)
-%% and return its result.
-%% Otherwise return UserArg unchanged.
-RunIfEnvVar = fun(EnvVar, UserFun, Default) ->
-                      case os:getenv(EnvVar) of
-                          X when X =:= false; X == [] ->
-                              Default;
-                          EnvVal ->
-                              UserFun(EnvVal, Default)
-                      end
-              end.
-
-IsDbg = RunIfEnvVar("REBAR_EXTRA_DBG", fun(_EnvVal, _Def) -> true end, false).
-DbgDo = fun(F) when is_function(F, 0) -> IsDbg andalso F() end.
-DbgMsg = fun(Fmt, Args) -> DbgDo(fun() -> io:format(Fmt, Args) end) end.
-
-DbgMsg("CONFIG: ~p~n", [CONFIG]).
-
 %% Strip any combination of newline and whitespace off both ends of S
 StrStrip = fun(S, F, S) ->
                    S;
@@ -32,6 +9,57 @@ StrStrip = fun(S, F, S) ->
 StrClean = fun(S) ->
                    StrStrip(S, StrStrip, "")
            end.
+
+
+IsFalsy = fun(false) -> true;
+             (S) when is_list(S) -> StrClean(S) =:= [];
+             (_) -> false
+          end.
+
+IsTruthy = fun(true) -> true;
+              (S) when is_list(S) -> StrClean(S) =/= [];
+              (_) -> false
+           end.
+
+GetEnv =
+    fun F(EnvVar, {IfFalsyFun, IfTruthyFun}) when is_function(IfFalsyFun, 1) andalso
+                                                  is_function(IfTruthyFun, 1) ->
+           case IsTruthy(Val = os:getenv(EnvVar)) of
+               true  -> IfTruthyFun(Val);
+               false -> IfFalsyFun(Val)
+           end;
+       F(EnvVar, {IfFalsyFun}) ->
+           F(EnvVar, IfFalsyFun);
+       F(EnvVar, bool) ->
+           F(EnvVar, {fun(_) -> false end, fun(_) -> true end});
+       F(EnvVar, IfFalsyFun) when is_function(IfFalsyFun, 1) ->
+           F(EnvVar, {IfFalsyFun, StrClean})
+    end.
+
+
+
+
+%% If EnvVar exists and has some content, call UserFun(Content, UserArg)
+%% and return its result.
+%% Otherwise return UserArg unchanged.
+RunIfEnvVar =
+    fun(EnvVar, UserFun, UserArg) ->
+        IfFalsyFun = fun(_) -> UserArg end,
+        IfTruthyFun = fun(Val) -> UserFun(Val, UserArg) end,
+        GetEnv(EnvVar, {IfFalsyFun, IfTruthyFun})
+    end.
+
+IsDbg = GetEnv("REBAR_EXTRA_DBG", bool).
+
+DbgDo = fun(F) when is_function(F, 0) -> IsDbg andalso F() end.
+DbgMsg = fun(Fmt, Args) -> DbgDo(fun() -> io:format(Fmt, Args) end) end.
+Msg = fun(Fmt, Args) ->
+              io:format(standard_error, Fmt, Args),
+              true
+      end.
+
+
+DbgMsg("CONFIG: ~p~n", [CONFIG]).
 
 GetFileAppVersion = fun() ->
                             case file:read_file("APP_VERSION") of
@@ -45,19 +73,14 @@ GetFileAppVersion = fun() ->
                             end
                     end.
 
-GetAppVersion = fun() ->
-                      case os:getenv("APP_VERSION") of
-                          X when X =:= false;
-                                 X =:= [] -> GetFileAppVersion();
-                          Val -> StrClean(Val)
-                      end
-                end.
+GetAppVersion =
+    fun() -> GetEnv("APP_VERSION", fun(_) -> GetFileAppVersion() end) end.
 
 %% Ensure edown target is valid
 ValTarget = fun(Target) ->
                     ATarget = list_to_atom(Target),
                     lists:member(ATarget, ['github', 'gitlab', 'stash'])
-                    orelse throw({bad_edown_target, Target}),
+                        orelse throw({bad_edown_target, Target}),
                     ATarget
             end.
 
@@ -90,22 +113,79 @@ SetCTSpec = fun(NewVal, CTOpts) -> KeyStore(spec, CTOpts, NewVal) end.
 
 GetFullHostname = fun() -> net_adm:localhost() end.
 
+MakeLongNodeB = fun(NodeName, HostName) ->
+                        list_to_binary([NodeName, $@, HostName])
+                end.
+
 MakeLongNodeS = fun(NodeName, HostName) ->
                         NodeName ++ "@" ++ HostName
                 end.
 
-ConfigureCTOpts = fun(Config) ->
-                          CTOpts0 = GetCTOpts(Config),
-                          CTSpec0 = case GetCTSpec(CTOpts0) of
-                                       undefined ->
-                                           % This MUST be a list of specs!
-                                           ["apns_erlv3.test.spec"];
-                                       S ->
-                                           S
-                                   end,
-                          CTOpts = SetCTSpec(CTSpec0, CTOpts0),
-                          SetCTOpts(CTOpts, Config)
-                  end.
+LONG_NODE_NAME_BIN = fun() ->
+                             HostN = GetFullHostname(),
+                             MakeLongNodeB("ct1_apns_erlv3", HostN)
+                     end.
+
+LONG_NODE_NAME_ATOM =
+    fun() ->
+            list_to_atom(binary_to_list(LONG_NODE_NAME_BIN()))
+    end.
+
+ConfigureCTOpts =
+     fun(Config) ->
+             DbgMsg("In ConfigureCTOpts~n", []),
+             DbgMsg("Config IN: ~p~n", [Config]),
+             CTOpts0 = GetCTOpts(Config),
+             CTSpec0 = case GetCTSpec(CTOpts0) of
+                           undefined ->
+                               % This MUST be a list of specs!
+                               ["apns_erlv3.test.spec"];
+                           S -> S
+                       end,
+             CTOpts = SetCTSpec(CTSpec0, CTOpts0),
+             ConfigOut = SetCTOpts(CTOpts, Config),
+             DbgMsg("Config OUT: ~p~n", [ConfigOut]),
+             ConfigOut
+        end.
+
+%% This function generates the test spec file needed by common test.
+%% It expects a file to exist, $SPEC_NAME.src, where $SPEC_NAME
+%% is defined as returned by ConfigureCTOpts.
+%%
+%% $SPEC_NAME.src must contain a stanza as follows:
+%%
+%% {node, ct1, '{{NEEDFULLNODENAME}}'}.
+%%
+%% This function replaces {{NEEDFULLNODENAME}} with the long node
+%% name of the node running rebar3 and saves the file as $SPECNAME.
+%%
+GenerateTestSpec =
+    fun(Config0) ->
+            Template = <<"{{NEEDFULLNODENAME}}">>,
+            Config = ConfigureCTOpts(Config0),
+            CTSpec = GetCTSpec(GetCTOpts(Config)),
+            true = (CTSpec /= undefined),
+            CTSpecSrc = CTSpec ++ ".src",
+            Res = case file:read_file(CTSpecSrc) of
+                      {ok, Spec0} ->
+                          true = (binary:match(Spec0, Template) /= nomatch),
+                          Spec = binary:replace(Spec0, Template, LONG_NODE_NAME_BIN()),
+                          ok = file:write_file(CTSpec, Spec),
+                          Config;
+                      Error ->
+                          Msg("Error opening ~s: ~p\n", [CTSpecSrc, Error]),
+                          undefined
+                  end,
+            DbgMsg("GenerateTestSpec returned ~p\n", [Res]),
+            Res
+    end.
+
+UpsertDistNode =
+    fun(Config, LongNodeName, Cookie) when is_atom(LongNodeName),
+                                           is_atom(Cookie) ->
+            DistNode = {dist_node, [{name, LongNodeName}, {setcookie, Cookie}]},
+            lists:keystore(dist_node, 1, Config, DistNode)
+    end.
 
 ConfigurePreHooks = fun(Config0) ->
                             Config = ConfigureCTOpts(Config0),
@@ -118,9 +198,11 @@ ConfigurePreHooks = fun(Config0) ->
                             CTHook = case GetCTHook(PreHooks) of
                                          S when S == undefined orelse
                                                 S == Script ->
-                                             string:join([Script,
-                                                          NodeName,
-                                                          CTSpec], " ");
+                                             lists:flatten(
+                                                 string:join([Script,
+                                                              NodeName,
+                                                              CTSpec], " ")
+                                             );
                                          S ->
                                              S
                                      end,
@@ -176,14 +258,18 @@ CfgVersion = fun(Cfg) ->
                      end
              end.
 
-CfgCtOverride = fun(Cfg) ->
-                        case os:getenv("CT_OVERRIDE") of
-                            false ->
-                                ConfigurePreHooks(Cfg);
-                            _ ->
-                                Cfg
-                        end
-                end.
+CfgCtOverride =
+    fun(Cfg) ->
+            GetEnv("CT_OVERRIDE",
+                   {fun(_) ->
+                            DbgMsg("Configuring pre_hooks", []),
+                            ConfigurePreHooks(Cfg)
+                    end,
+                    fun(_) ->
+                            DbgMsg("CT_OVERRIDE, no ct pre_hooks", []),
+                            Cfg
+                    end})
+    end.
 
 %%{pre_hooks, [{ct, "./pre_common_test_hook.sh"}]}.
 
@@ -193,14 +279,21 @@ CfgCtOverride = fun(Cfg) ->
 %%{pre_hooks, [{ct, "./pre_common_test_hook.sh"}]}.
 %%{ct_opts, [{spec, "apns_erlv3.test.spec"}]}.
 
+CfgDistNode =
+    fun(Cfg) ->
+            Cookie = 'apns_erlv3',
+            UpsertDistNode(Cfg, LONG_NODE_NAME_ATOM(), Cookie)
+    end.
+
 %% Chain the config change functions
-RunChangeFuns = fun(Config) ->
-                        NC = lists:foldl(fun(F, Cfg) -> F(Cfg) end,
-                                         Config,
-                                         [CfgEdownUrl, CfgEdownTarget,
-                                          CfgVersion, CfgCtOverride]),
-                        DbgMsg("~p~n", [NC]),
-                        NC
-                end.
+RunChangeFuns =
+    fun(Config) ->
+            NC = lists:foldl(fun(F, Cfg) -> F(Cfg) end,
+                             Config,
+                             [GenerateTestSpec, CfgEdownUrl, CfgEdownTarget,
+                              CfgVersion, CfgCtOverride, CfgDistNode]),
+            DbgMsg("Final config:~n~p~n", [NC]),
+            NC
+     end.
 
 RunChangeFuns(CONFIG).

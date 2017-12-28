@@ -2327,7 +2327,7 @@ send_ping(Http2Client) ->
 http2_ping_frame() ->
     Flags = 0,
     StreamId = 0, % MUST be 0 according to RFC 7540
-    Payload = crypto:rand_bytes(8),
+    Payload = crypto:strong_rand_bytes(8),
     http2_frame(?HTTP2_PING_FRAME, Flags, StreamId, Payload).
 
 %%--------------------------------------------------------------------

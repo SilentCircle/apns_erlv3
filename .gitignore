@@ -21,3 +21,4 @@ src/ApnsCerts.asn1db
 src/ApnsCerts.erl
 src/ApnsCerts.hrl
 rebar3.crashdump
+CONFIG

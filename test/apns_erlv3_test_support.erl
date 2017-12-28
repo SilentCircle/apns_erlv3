@@ -254,19 +254,22 @@ stop_session(SessCfg, StartedSessions, StopFun) when is_list(SessCfg),
         undefined ->
             ct:pal("Session ~p not running, no need to stop it", [Name]),
             ok;
-        Pid ->
-            NPR = {Name, Pid, Ref} = session_info(SessCfg, StartedSessions),
-            ct:pal("Stopping session ~p pid: ~p ref: ~p", [Name, Pid, Ref]),
+        _ChildPid ->
+            NPR = session_info(SessCfg, StartedSessions),
+            ct:pal("Session Info: ~p", [NPR]),
+            {Name, StopPid, Ref} = NPR,
+            ct:pal("Stopping session ~p pid: ~p ref: ~p", [Name, StopPid, Ref]),
             ok = StopFun(NPR),
             receive
-                {'DOWN', _MRef, process, Pid, Reason} ->
+                {'DOWN', _MRef, process, StopPid, Reason} ->
                     ct:pal("Received 'DOWN' from pid ~p, reason ~p",
-                           [Pid, Reason]),
+                           [StopPid, Reason]),
                     ok
             after 2000 ->
                       safe_demonitor(Ref),
-                      erlang:exit(Pid, kill),
-                      ct:pal("Had to kill pid ~p because it timed out", [Pid]),
+                      erlang:exit(StopPid, kill),
+                      ct:pal("Had to kill pid ~p because it timed out",
+                             [StopPid]),
                       ok
             end
     end.
@@ -282,11 +285,15 @@ start_simulator(Name, SimConfig, LagerEnv, _PrivDir) ->
     CodePaths = [Path || Path <- code:get_path(),
                          string:rstr(Path, "_build/") > 0],
     %{ok, GenResultPL} = generate_sys_config(chatterbox, SimConfig, PrivDir),
-    ct:pal("Starting sim slave node named ~p", [Name]),
     %% Start with kernel poll enabled and generous process allocation.
     %% Erlang 17+ supports +Q in place of the environment variable, and
     %% maximizes the ports to the ulimit-allowed number of ports.
-    Node = case start_slave(Name, "+K true +P 500000 -A 20") of
+    %% We also need the cookie to agree with our cookie, which we assume
+    %% has been set correctly at this point.
+    Cookie = atom_to_list(erlang:get_cookie()),
+    Args = "+K true +P 500000 -A 20 -setcookie " ++ Cookie,
+    ct:pal("Starting sim slave node named ~p with args ~p", [Name, Args]),
+    Node = case start_slave(Name, Args) of
                {ok, SimNode} ->
                    ct:pal("Sim node name: ~p", [SimNode]),
                    SimNode;
@@ -583,7 +590,7 @@ bin_prop(K, PL) ->
 
 %%--------------------------------------------------------------------
 rand_push_tok() ->
-    sc_util:bitstring_to_hex(crypto:rand_bytes(32)).
+    sc_util:bitstring_to_hex(crypto:strong_rand_bytes(32)).
 
 %%--------------------------------------------------------------------
 gen_uuid() ->
